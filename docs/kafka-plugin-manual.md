@@ -295,11 +295,26 @@ plugin integrates with Schema Registry and supports Avro, Protobuf, and JSON sch
     * Confluent:
         * **URL**: enter the Schema Registry URL.
         * **Configuration source**: select the way to provide connection parameters:
-            * **Custom**: select the authentication method and provide credentials.If you want to use SSL settings
-              different from those of the Kafka Broker, clear the **Use broker SSL settings** checkbox and provide the
-              path for the truststore.
+            * **Custom**: select the authentication method and provide credentials. Credentials are saved in the IDE
+              password storage. If you want to use SSL settings different from those of the Kafka Broker, clear the
+              **Use broker SSL settings** checkbox and provide the path for the truststore. The same SSL settings are
+              used to connect to the OAuth token endpoint. The following authentication methods are available:
+                * **None**: connect without authentication.
+                * **Basic Auth**: enter a username and a password.
+                * **Bearer**: enter a static bearer token.
+                * **OAuth 2.0**: authenticate with an OAuth 2.0 identity provider using the client credentials flow.
+                  The plugin requests and renews access tokens automatically. Enter the following:
+                    * **Token endpoint URL**: the `http://` or `https://` URL of the token endpoint of your identity
+                      provider.
+                    * **Client ID** and **Client secret**: the credentials of your OAuth client.
+                    * **Scope** (optional): the scope to request for the access token.
+                    * **Logical cluster** (optional): the Schema Registry logical cluster ID, for example `lsrc-xxxxxx`.
+                      Confluent Cloud uses it to route requests to your Schema Registry.
+                    * **Identity pool ID** (optional): the identity pool ID, for example `pool-xxxxxx`. Confluent Cloud
+                      uses it to authorize requests.
             * **Properties**: paste provided configuration properties. Or you can enter properties manually using code
-              completion and quick documentation that the IDE provides.
+              completion and quick documentation that the IDE provides. Use this option to set OAuth properties that are
+              not available in the **Custom** form, for example `bearer.auth.cache.expiry.buffer.seconds`.
     * Glue:
         * **Region**: select the Schema Registry region.
         * **AWS Authentication**: select the authentication method:

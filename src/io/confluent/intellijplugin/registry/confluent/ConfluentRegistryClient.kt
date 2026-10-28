@@ -122,6 +122,17 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
         fun createFor(project: Project?, connectionData: KafkaConnectionData, testConnection: Boolean) =
             createConfluentClient(connectionData, project, testConnection)
 
+        /**
+         * Builds a client for [url] configured with the Schema Registry client [props]
+         * (authentication, SSL, proxy), making sure an OAuth token endpoint is allow-listed first.
+         */
+        fun create(url: String, props: Map<String, String>): ConfluentRegistryClient {
+            SchemaRegistryOAuthUrls.allowTokenEndpoint(props)
+            val restService = RestService(url)
+            restService.configure(props)
+            return ConfluentRegistryClient(restService, props)
+        }
+
         private fun createConfluentClient(
             connectionData: KafkaConnectionData,
             project: Project?,
@@ -156,10 +167,7 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
             )
             val tunneledUrl = tunnel?.tunnelledUri ?: url
 
-            val restService = RestService(tunneledUrl)
-
-            restService.configure(props)
-            val registryClient = ConfluentRegistryClient(restService, props)
+            val registryClient = create(tunneledUrl, props)
             if (tunnel != null) {
                 Disposer.register(registryClient, tunnel)
             }

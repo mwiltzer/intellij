@@ -4,8 +4,10 @@ All noteworthy changes to this plugin will be documented in this file.
 ## Unreleased
 ### Changed
 - Consumer and producer record tables now retain up to 50,000 records per session. Previously, leaving the "Consumer records limit" field empty (or set to 0) allowed unbounded growth.
+- Upgrade Apache Kafka client to 4.1.2 (required by the Schema Registry client's OAuth token provider)
 ### Added
 - MessagePack serialization support for consumer and producer records
+- OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
 ### Removed
 ### Fixed
 

@@ -21,6 +21,7 @@ import io.confluent.intellijplugin.core.util.withPluginClassLoader
 import io.confluent.intellijplugin.model.*
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.registry.confluent.ConfluentRegistryClient
+import io.confluent.intellijplugin.registry.confluent.SchemaRegistryOAuthUrls
 import io.confluent.intellijplugin.registry.glue.BdtGlueRegistryClient
 import io.confluent.intellijplugin.rfs.KafkaConfigurationSource
 import io.confluent.intellijplugin.rfs.KafkaConnectionData
@@ -159,7 +160,8 @@ class KafkaClient(
     }
 
     fun getConsumerGroups(): List<ConsumerGroupPresentable> {
-        val result = kafkaAdminNotNull.listConsumerGroups().valid().get().filter { !it.groupId().endsWith("/") }
+        val result = kafkaAdminNotNull.listGroups(ListGroupsOptions.forConsumerGroups()).valid().get()
+            .filter { !it.groupId().endsWith("/") }
         val config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(connectionData.innerId)
         return result.map {
             ConsumerGroupPresentable(
@@ -376,6 +378,8 @@ class KafkaClient(
                 BdtPropertyComponent.parseProperties(connectionData.secretRegistryProperties).forEach {
                     props[it.name ?: ""] = it.value ?: ""
                 }
+                // Schema Registry serializers configure the OAUTHBEARER provider from these props as well
+                SchemaRegistryOAuthUrls.allowTokenEndpoint(props)
             }
 
             KafkaRegistryType.AWS_GLUE -> {}
