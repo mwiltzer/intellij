@@ -138,6 +138,7 @@ class KafkaRegistrySettings(
     }
 
     internal val confluentSslComponent = KafkaSslSettingsComponent(project, ::updateRegistryPropertiesField)
+    internal val confluentOAuthComponent = KafkaOAuthSettingsComponent(uiDisposable, ::updateRegistryPropertiesField)
 
     private lateinit var confluentGroup: RowsRange
     private lateinit var glueGroup: RowsRange
@@ -147,6 +148,7 @@ class KafkaRegistrySettings(
 
     private lateinit var schemaBasicAuthGroup: RowsRange
     private lateinit var schemaBearerGroup: Row
+    private lateinit var schemaOAuthGroup: RowsRange
     internal lateinit var confluentBasicLogin: Cell<JBTextField>
     internal lateinit var confluentBasicPassword: Cell<JBPasswordField>
     internal lateinit var confluentBearerToken: Cell<JBTextField>
@@ -219,6 +221,8 @@ class KafkaRegistrySettings(
                 schemaBearerGroup = row(KafkaMessagesBundle.message("kafka.token")) {
                     confluentBearerToken = textField().align(AlignX.FILL)
                 }.layout(RowLayout.INDEPENDENT)
+
+                schemaOAuthGroup = confluentOAuthComponent.create(this)
             }
 
             row {
@@ -269,6 +273,7 @@ class KafkaRegistrySettings(
         val selectedAuthType = confluentSchemaAuth.selectedItem
         schemaBasicAuthGroup.visible(selectedAuthType == SchemaRegistryAuthType.BASIC_AUTH)
         schemaBearerGroup.visible(selectedAuthType == SchemaRegistryAuthType.BEARER)
+        schemaOAuthGroup.visible(selectedAuthType == SchemaRegistryAuthType.OAUTH)
     }
 
     private fun updateRegistryUiFromProperties(): Unit = try {
@@ -294,12 +299,18 @@ class KafkaRegistrySettings(
             properties[SchemaRegistryClientConfig.BASIC_AUTH_CREDENTIALS_SOURCE] == SUPPORT_REGISTRY_BASIC_AUTH_TYPE
         val isBearerAuth =
             properties[SchemaRegistryClientConfig.BEARER_AUTH_CREDENTIALS_SOURCE] == SUPPORT_REGISTRY_BEARER_AUTH_TYPE
+        val isOAuth = KafkaOAuthConfig.isOAuth(properties)
         when {
             isBasicAuth -> {
                 confluentSchemaAuth.selectedItem = SchemaRegistryAuthType.BASIC_AUTH
                 val userInfo = properties[SchemaRegistryClientConfig.USER_INFO_CONFIG] ?: ""
                 confluentBasicLogin.component.text = userInfo.takeWhile { it != ':' }
                 confluentBasicPassword.component.text = userInfo.takeLastWhile { it != ':' }
+            }
+
+            isOAuth -> {
+                confluentSchemaAuth.selectedItem = SchemaRegistryAuthType.OAUTH
+                confluentOAuthComponent.applyConfig(KafkaOAuthConfig.fromRegistryProperties(properties))
             }
 
             isBearerAuth -> {
@@ -347,7 +358,7 @@ class KafkaRegistrySettings(
             SchemaRegistryClientConfig.BEARER_AUTH_CREDENTIALS_SOURCE to null,
             SchemaRegistryClientConfig.BEARER_AUTH_TOKEN_CONFIG to null,
             SchemaRegistryClientConfig.USER_INFO_CONFIG to null,
-        )
+        ) + KafkaOAuthConfig.MANAGED_KEYS.associateWith { null }
 
         @Suppress("DEPRECATION")
         val auth = when (confluentSchemaAuth.selectedItem) {
@@ -365,6 +376,8 @@ class KafkaRegistrySettings(
                     SchemaRegistryClientConfig.BEARER_AUTH_TOKEN_CONFIG to confluentBearerToken.component.text
                 )
             }
+
+            SchemaRegistryAuthType.OAUTH -> confluentOAuthComponent.getConfig().toRegistryProperties()
         }
         val ssl = if (!useBrokerSslCheckbox.checkBoxField.isSelected) {
             val config = confluentSslComponent.getConfig()

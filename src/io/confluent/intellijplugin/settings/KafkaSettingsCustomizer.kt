@@ -111,6 +111,12 @@ class KafkaSettingsCustomizer(
     internal lateinit var registryConfluentBasicAuth: Cell<JBTextField>
     internal lateinit var registryConfluentBasicPassword: Cell<JBPasswordField>
     internal lateinit var registryConfluentBearerToken: Cell<JBTextField>
+    internal lateinit var registryConfluentOAuthTokenEndpointUrl: Cell<JBTextField>
+    internal lateinit var registryConfluentOAuthClientId: Cell<JBTextField>
+    internal lateinit var registryConfluentOAuthClientSecret: Cell<JBPasswordField>
+    internal lateinit var registryConfluentOAuthScope: Cell<JBTextField>
+    internal lateinit var registryConfluentOAuthLogicalCluster: Cell<JBTextField>
+    internal lateinit var registryConfluentOAuthIdentityPoolId: Cell<JBTextField>
     internal lateinit var registryConfluentUseProxy: Cell<JBCheckBox>
     internal lateinit var registryConfluentProxyUrl: Cell<JBTextField>
     internal lateinit var registryConfluentUseBrokerSsl: Cell<JBCheckBox>
@@ -206,6 +212,12 @@ class KafkaSettingsCustomizer(
         registryConfluentBasicAuth = registrySettings.confluentBasicLogin
         registryConfluentBasicPassword = registrySettings.confluentBasicPassword
         registryConfluentBearerToken = registrySettings.confluentBearerToken
+        registryConfluentOAuthTokenEndpointUrl = registrySettings.confluentOAuthComponent.tokenEndpointUrl
+        registryConfluentOAuthClientId = registrySettings.confluentOAuthComponent.clientId
+        registryConfluentOAuthClientSecret = registrySettings.confluentOAuthComponent.clientSecret
+        registryConfluentOAuthScope = registrySettings.confluentOAuthComponent.scope
+        registryConfluentOAuthLogicalCluster = registrySettings.confluentOAuthComponent.logicalCluster
+        registryConfluentOAuthIdentityPoolId = registrySettings.confluentOAuthComponent.identityPoolId
         registryConfluentUseProxy = registrySettings.confluentUseProxy
         registryConfluentProxyUrl = registrySettings.confluentProxyUrl
         registryConfluentUseBrokerSsl = registrySettings.confluentUseBrokerSsl

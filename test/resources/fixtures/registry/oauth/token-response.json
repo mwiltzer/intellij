@@ -1,0 +1,6 @@
+{
+  "access_token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ0ZXN0LWNsaWVudC1pZCIsImlzcyI6Imh0dHBzOi8vbG9naW4uZXhhbXBsZS5jb20iLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6NDEwMjQ0NDgwMCwic2NvcGUiOiJzY2hlbWEtcmVnaXN0cnkifQ.dGVzdC1zaWduYXR1cmU",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "schema-registry"
+}

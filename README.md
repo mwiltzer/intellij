@@ -45,8 +45,8 @@ You can find instructions on how to install SDKMAN! in the [SDKMAN! docs](https:
 
 The plugin depends on several libraries:
 
-- Apache Kafka Clients (4.0.0)
-- Confluent Schema Registry Client (7.2.0)
+- Apache Kafka Clients (4.1.2)
+- Confluent Schema Registry Client (8.1.0)
 - AWS SDK components for Glue and SSO integration
 - Various serializers for Avro, JSON, and Protobuf Schemas
 
