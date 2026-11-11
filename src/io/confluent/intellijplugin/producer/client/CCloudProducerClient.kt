@@ -21,9 +21,9 @@ import io.confluent.intellijplugin.producer.models.AcksType
 import io.confluent.intellijplugin.producer.models.Mode
 import io.confluent.intellijplugin.producer.models.ProducerFlowParams
 import io.confluent.intellijplugin.producer.models.RecordCompression
+import io.confluent.intellijplugin.registry.AvroJson
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
-import io.confluent.kafka.schemaregistry.avro.AvroSchemaUtils
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchema
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchemaUtils
 import com.google.protobuf.DynamicMessage
@@ -386,7 +386,7 @@ class CCloudProducerClient(
             KafkaRegistryFormat.AVRO -> {
                 val avroSchema = field.parsedSchema as? AvroSchema
                     ?: error("Expected AvroSchema for format ${field.schemaFormat}, got ${field.parsedSchema?.javaClass?.simpleName}")
-                val record = AvroSchemaUtils.toObject(field.valueText, avroSchema)
+                val record = AvroJson.toObject(field.valueText, avroSchema)
                 serializeAvro(record, avroSchema)
             }
             KafkaRegistryFormat.PROTOBUF -> {
@@ -412,7 +412,7 @@ class CCloudProducerClient(
      */
     private fun buildAvroData(field: ConsumerProducerFieldConfig): ProduceRecordData {
         val avroSchema = field.parsedSchema as AvroSchema
-        val record = AvroSchemaUtils.toObject(field.valueText, avroSchema)
+        val record = AvroJson.toObject(field.valueText, avroSchema)
         val bytes = serializeAvro(record, avroSchema)
         return ProduceRecordData(
             type = "BINARY",
@@ -464,9 +464,9 @@ class CCloudProducerClient(
      * Mirror of [CCloudConsumerClient.deserializeAvro].
      */
     @VisibleForTesting
-    internal fun serializeAvro(value: Any, schema: AvroSchema): ByteArray {
+    internal fun serializeAvro(value: Any?, schema: AvroSchema): ByteArray {
         val avroSchema = schema.rawSchema()
-        val writer = GenericDatumWriter<Any>(avroSchema)
+        val writer = GenericDatumWriter<Any?>(avroSchema)
         val outputStream = java.io.ByteArrayOutputStream()
         val encoder = EncoderFactory.get().binaryEncoder(outputStream, null)
         writer.write(value, encoder)

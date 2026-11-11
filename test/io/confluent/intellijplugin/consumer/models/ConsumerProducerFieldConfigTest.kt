@@ -4,6 +4,8 @@ import com.intellij.testFramework.junit5.TestApplication
 import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
+import io.confluent.kafka.schemaregistry.avro.AvroSchema
+import org.apache.avro.generic.GenericRecord
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
@@ -159,6 +161,74 @@ class ConsumerProducerFieldConfigTest {
             assertThrows<Exception> {
                 config(KafkaFieldType.SCHEMA_REGISTRY, "").getValueObj()
             }
+        }
+    }
+
+    @Nested
+    @DisplayName("getValueObj - Avro")
+    inner class AvroValues {
+
+        private val avroSchema = AvroSchema(
+            """
+            {"type":"record","name":"Order","namespace":"shop","fields":[
+              {"name":"id","type":"long"},
+              {"name":"customerName","type":["null","string"],"default":null},
+              {"name":"createdAt","type":{"type":"long","logicalType":"timestamp-millis"}}
+            ]}
+            """.trimIndent()
+        )
+
+        // A message as AKHQ shows it: the plain value of a union, the timestamp as ISO text.
+        private val akhqJson = """{"id":1,"customerName":"Ada","createdAt":"2024-05-01T10:15:30.123Z"}"""
+
+        // The same message in the Avro JSON encoding, which the consumer shows.
+        private val avroJson = """{"id":1,"customerName":{"string":"Ada"},"createdAt":1714558530123}"""
+
+        private fun avroConfig(type: KafkaFieldType, valueText: String) = ConsumerProducerFieldConfig(
+            type = type,
+            valueText = valueText,
+            isKey = false,
+            topic = "orders",
+            registryType = KafkaRegistryType.CONFLUENT,
+            schemaName = "orders-value",
+            schemaFormat = KafkaRegistryFormat.AVRO,
+            parsedSchema = avroSchema
+        )
+
+        private fun assertOrder(value: Any?) {
+            val record = value as GenericRecord
+            assertEquals(1L, record.get("id"))
+            assertEquals("Ada", record.get("customerName").toString())
+            assertEquals(1714558530123L, record.get("createdAt"))
+        }
+
+        @Test
+        fun `should read the Avro JSON encoding for SCHEMA_REGISTRY type`() {
+            assertOrder(avroConfig(KafkaFieldType.SCHEMA_REGISTRY, avroJson).getValueObj())
+        }
+
+        @Test
+        fun `should read plain JSON as shown by AKHQ for SCHEMA_REGISTRY type`() {
+            assertOrder(avroConfig(KafkaFieldType.SCHEMA_REGISTRY, akhqJson).getValueObj())
+        }
+
+        @Test
+        fun `should read the Avro JSON encoding for AVRO_CUSTOM type`() {
+            assertOrder(avroConfig(KafkaFieldType.AVRO_CUSTOM, avroJson).getValueObj())
+        }
+
+        @Test
+        fun `should read plain JSON as shown by AKHQ for AVRO_CUSTOM type`() {
+            assertOrder(avroConfig(KafkaFieldType.AVRO_CUSTOM, akhqJson).getValueObj())
+        }
+
+        @Test
+        fun `should name the field that does not fit`() {
+            val failure = assertThrows<Exception> {
+                avroConfig(KafkaFieldType.SCHEMA_REGISTRY, akhqJson.replace("\"id\":1", "\"id\":\"one\"")).getValueObj()
+            }
+
+            assertTrue(failure.message!!.startsWith("\$.id: expected an integer"), failure.message)
         }
     }
 }

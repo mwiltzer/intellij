@@ -12,6 +12,7 @@ import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.consumer.models.ConsumerProducerFieldConfig
 import io.confluent.intellijplugin.core.settings.connections.Property
 import io.confluent.intellijplugin.data.CCloudClusterDataManager
+import io.confluent.intellijplugin.registry.AvroJson
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.testutil.fixture
@@ -646,6 +647,31 @@ class CCloudProducerClientTest {
             val decoder = org.apache.avro.io.DecoderFactory.get().binaryDecoder(bytes, null)
             val result = reader.read(null, decoder) as org.apache.avro.generic.GenericRecord
             assertEquals("hello", result.get("name").toString())
+        }
+
+        @Test
+        fun `should write the same bytes for JSON as AKHQ shows it as for the Avro JSON encoding`() {
+            val avroSchema = AvroSchema(
+                """{"type":"record","name":"Order","fields":[
+                    {"name":"id","type":"long"},
+                    {"name":"customerName","type":["null","string"],"default":null},
+                    {"name":"createdAt","type":{"type":"long","logicalType":"timestamp-millis"}}]}"""
+            )
+            val avroJson = """{"id":1,"customerName":{"string":"Ada"},"createdAt":1714558530123}"""
+            val akhqJson = """{"id":1,"customerName":"Ada","createdAt":"2024-05-01T10:15:30.123Z"}"""
+
+            val expected = client.serializeAvro(AvroSchemaUtils.toObject(avroJson, avroSchema), avroSchema)
+            val actual = client.serializeAvro(AvroJson.toObject(akhqJson, avroSchema), avroSchema)
+
+            assertArrayEquals(expected, actual)
+        }
+
+        @Test
+        fun `should serialize null for a schema that allows it`() {
+            val avroSchema = AvroSchema("""["null","string"]""")
+
+            // Avro writes the index of the union branch, which is 0 for null.
+            assertArrayEquals(byteArrayOf(0), client.serializeAvro(null, avroSchema))
         }
     }
 

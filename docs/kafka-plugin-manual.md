@@ -193,6 +193,13 @@ favorite: right-click a topic and select **Add to Favorites**.
       Protobuf file, start typing random in the value field to see autocompletion options for possible random values.
       For example, you can use `"${random.integer(1,10)}"` to generate a random integer between 1 and 10.
       <img src="images/kafka_random_value.png" alt="Kafka random keyword" width="500"/>
+    * To replay a record, paste its JSON into the value field. Avro values can be written the way Avro writes them in
+      JSON, like the consumer shows them, or the way tools like AKHQ show them: the plain value of a union instead of
+      `{"string": "Ada"}`, ISO text for dates and timestamps (`"2024-05-01"`, `"2024-05-01T10:15:30.123Z"`), a number
+      for a decimal, Base64 text for bytes, and fields that are left out, which get the default of the schema or null
+      when the schema allows it. If the JSON does not fit the schema, the message names the field that does not. A
+      value of a `bytes` or `fixed` field is read as Base64 only when the JSON is not valid in the way Avro writes it,
+      because the same text means something else there: the characters of the bytes.
 
 7. Under **Headers**, provide any custom headers. If you have them in JSON or CSV format, you can paste them into this
    section.

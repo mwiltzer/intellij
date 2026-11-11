@@ -11,6 +11,7 @@ All noteworthy changes to this plugin will be documented in this file.
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
+- Avro values can be produced from JSON the way tools like AKHQ show it, to replay a record: the plain value of a union instead of `{"string": "Ada"}`, ISO text for dates and timestamps, a number for a decimal, Base64 text for bytes (unless the JSON is also valid Avro JSON, see the manual), and a null that is left out. The Avro JSON encoding is read as before. When the JSON fits neither, the message now says which field does not fit the schema, like `$.address.zip: expected one of (null, string), found the number 5`
 ### Removed
 ### Fixed
 - Deleting a consumer group that the broker rejects (for example, one that still has active members) now shows an error instead of appearing to succeed.

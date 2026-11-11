@@ -2,12 +2,12 @@ package io.confluent.intellijplugin.consumer.models
 
 import com.amazonaws.services.schemaregistry.serializers.json.JsonDataWithSchema
 import io.confluent.intellijplugin.common.models.KafkaFieldType
+import io.confluent.intellijplugin.registry.AvroJson
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
-import io.confluent.kafka.schemaregistry.avro.AvroSchemaUtils
 import io.confluent.kafka.schemaregistry.json.JsonSchema
 import io.confluent.kafka.schemaregistry.json.JsonSchemaUtils
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchema
@@ -39,7 +39,7 @@ data class ConsumerProducerFieldConfig(
             if (valueText.isBlank())
                 throw Exception(KafkaMessagesBundle.message("validator.notEmpty"))
             when (schemaFormat) {
-                KafkaRegistryFormat.AVRO -> AvroSchemaUtils.toObject(valueText, parsedSchema as AvroSchema)
+                KafkaRegistryFormat.AVRO -> AvroJson.toObject(valueText, parsedSchema as AvroSchema)
                 KafkaRegistryFormat.PROTOBUF -> ProtobufSchemaUtils.toObject(valueText, parsedSchema as ProtobufSchema)
                 KafkaRegistryFormat.JSON -> when (registryType) {
                     KafkaRegistryType.NONE -> error("Not allowed")
@@ -55,6 +55,6 @@ data class ConsumerProducerFieldConfig(
         }
 
         KafkaFieldType.PROTOBUF_CUSTOM -> ProtobufSchemaUtils.toObject(valueText, parsedSchema as ProtobufSchema)
-        KafkaFieldType.AVRO_CUSTOM -> AvroSchemaUtils.toObject(valueText, parsedSchema as AvroSchema)
+        KafkaFieldType.AVRO_CUSTOM -> AvroJson.toObject(valueText, parsedSchema as AvroSchema)
     }
 }
