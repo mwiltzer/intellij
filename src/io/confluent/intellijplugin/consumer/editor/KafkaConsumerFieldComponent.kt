@@ -14,7 +14,6 @@ import io.confluent.intellijplugin.core.rfs.driver.SafeExecutor
 import kotlinx.coroutines.launch
 import io.confluent.intellijplugin.common.editor.KafkaEditorUtils
 import io.confluent.intellijplugin.common.models.KafkaFieldType
-import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.common.settings.StorageConsumerConfig
 import io.confluent.intellijplugin.consumer.models.ConsumerProducerFieldConfig
 import io.confluent.intellijplugin.consumer.models.CustomSchemaData
@@ -108,15 +107,21 @@ class KafkaConsumerFieldComponent(
     fun load(config: StorageConsumerConfig) {
         fieldTypeComboBox.item = if (isKey) config.getKeyType() else config.getValueType()
         customSchemaController.setConsumerConfig(config)
-        schemaComboBox.item = if (isKey)
-            RegistrySchemaInEditor(schemaName = config.keySubject, schemaFormat = config.getKeyFormat())
+        if (isKey)
+            KafkaEditorUtils.selectSchemaByName(schemaComboBox, config.keySubject, config.getKeyFormat())
         else
-            RegistrySchemaInEditor(schemaName = config.valueSubject, schemaFormat = config.getValueFormat())
+            KafkaEditorUtils.selectSchemaByName(schemaComboBox, config.valueSubject, config.getValueFormat())
     }
 
     fun updateIsEnabled(isEnabled: Boolean) {
         fieldTypeComboBox.isEnabled = isEnabled
         schemaComboBox.isEnabled = isEnabled
+    }
+
+    /** Makes sure the selected schema knows its format before it is used: the list may not have got to it yet. */
+    suspend fun resolveSchemaFormat() {
+        if (fieldTypeComboBox.item == KafkaFieldType.SCHEMA_REGISTRY)
+            KafkaEditorUtils.resolveSelectedFormat(schemaComboBox, kafkaManager)
     }
 
     suspend fun loadFieldConfig(): ConsumerProducerFieldConfig {

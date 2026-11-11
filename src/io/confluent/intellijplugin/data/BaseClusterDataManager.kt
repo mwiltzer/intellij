@@ -1,8 +1,10 @@
 package io.confluent.intellijplugin.data
 
 import com.intellij.CommonBundle
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -22,16 +24,21 @@ import io.confluent.intellijplugin.model.ConsumerGroupOffsetInfo
 import io.confluent.intellijplugin.model.ConsumerGroupPresentable
 import io.confluent.intellijplugin.model.TopicConfig
 import io.confluent.intellijplugin.model.TopicPresentable
-import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.consumer.editor.KafkaConsumerPanelStorage
 import io.confluent.intellijplugin.consumer.editor.KafkaConsumerSettings
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
+import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import io.confluent.intellijplugin.util.catchFailures
+import io.confluent.intellijplugin.util.timed
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.apache.kafka.clients.consumer.OffsetAndMetadata
@@ -42,10 +49,34 @@ abstract class BaseClusterDataManager(
     project: Project?,
     settings: IntervalUpdateSettings,
     driverProvider: () -> MonitoringDriver
-) : MonitoringDataManager(project, settings, driverProvider) {
+) : MonitoringDataManager(project, settings, driverProvider), SchemaFormats {
 
     abstract val connectionId: String
     abstract val registryType: KafkaRegistryType
+
+    // The registry work behind the schemas must go on when the one who asked for it gives up, so it has its own scope.
+    private val schemaScope: CoroutineScope by lazy {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope ->
+            // A manager that is disposed already takes no more work.
+            if (!Disposer.tryRegister(this, Disposable { scope.cancel() })) scope.cancel()
+        }
+    }
+
+    /** The formats of the registry schemas, shared by the tool window and the editors. */
+    internal val schemaFormats: SchemaFormatResolver by lazy {
+        SchemaFormatResolver(scope = schemaScope) { loadSchemaDetails(it) }
+    }
+
+    // The names of all the schemas, shared by the editors. Changes through the plugin invalidate them sooner than they
+    // expire, and what is older is still shown by the editors while the registry is asked again, see
+    // getCachedSchemaNames.
+    private val schemaNames: ExpiringSingleFlight<List<String>> by lazy {
+        ExpiringSingleFlight(schemaScope, SCHEMA_NAMES_TTL_MS) {
+            thisLogger().timed("Listing the schema names of connection $connectionId") {
+                listSchemasNames(limit = null, filter = null).first.map { it.name }.sortedBy { it.lowercase() }
+            }
+        }
+    }
 
     /**
      * Get the RFS path for a schema subject.
@@ -264,8 +295,44 @@ abstract class BaseClusterDataManager(
         }
     }
 
-    @RequiresBackgroundThread
-    abstract fun getSchemasForEditor(): List<RegistrySchemaInEditor>
+    /**
+     * Names of the schemas the editors can reference, without their formats.
+     *
+     * The editors, and their key and value fields, ask for the names all at the same time, so they share one
+     * registry request, and what it found is reused for [SCHEMA_NAMES_TTL_MS]. A listing of a big registry takes
+     * seconds, so what is older is still there for the editors to show, see [getCachedSchemaNames].
+     * `null` if the registry could not be asked.
+     */
+    override suspend fun getSchemaNamesForEditor(): List<String>? = try {
+        schemaNames.get()
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        thisLogger().warn("Failed to list schema names for connection $connectionId", e)
+        null
+    }
+
+    override fun getCachedSchemaNames(): List<String>? = schemaNames.peek()
+
+    override fun getKnownSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.known(name)
+
+    override suspend fun getSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.formatOf(name)
+
+    override suspend fun resolveSchemaFormats(
+        names: Collection<String>,
+        first: Collection<String>,
+        onResolved: (name: String, format: KafkaRegistryFormat) -> Unit
+    ) = schemaFormats.resolveAll(names, first, onResolved)
+
+    /** Loads the details of the schema [name] from the registry, never from what is cached. */
+    protected abstract suspend fun loadSchemaDetails(name: String): KafkaSchemaInfo
+
+    /** The schemas of the registry changed: the editors must not keep offering the names they got before. */
+    protected fun invalidateSchemaNames() {
+        schemaNames.invalidate()
+    }
 
     abstract suspend fun getLatestVersionInfo(schemaName: String): SchemaVersionInfo?
 
@@ -503,5 +570,10 @@ abstract class BaseClusterDataManager(
             thisLogger().warn("Failed to load versions for schema '$schemaName'", e)
             FieldGroupsData(emptyList(), emptyList())
         }
+    }
+
+    private companion object {
+        // How long the names of all the schemas are kept. The editors show older ones while the registry is asked again.
+        const val SCHEMA_NAMES_TTL_MS = 60_000L
     }
 }

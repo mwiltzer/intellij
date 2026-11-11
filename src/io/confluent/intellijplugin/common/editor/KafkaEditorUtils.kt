@@ -9,14 +9,14 @@ import com.intellij.json.JsonLanguage
 import com.intellij.lang.Language
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.runInEdt
+import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.openapi.util.Disposer
-import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.EditorCustomization
 import com.intellij.ui.EditorTextFieldProvider
-import com.intellij.ui.SimpleTextAttributes
 import com.intellij.util.ui.UIUtil
 import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
@@ -28,12 +28,16 @@ import io.confluent.intellijplugin.core.ui.ComponentColoredBorder
 import io.confluent.intellijplugin.core.ui.CustomListCellRenderer
 import io.confluent.intellijplugin.core.ui.DarculaTextAreaBorder
 import io.confluent.intellijplugin.core.util.executeNotOnEdt
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import io.confluent.intellijplugin.core.util.invokeLater
 import io.confluent.intellijplugin.data.BaseClusterDataManager
+import io.confluent.intellijplugin.data.SchemaFormats
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
@@ -45,7 +49,6 @@ import java.awt.event.ItemEvent.SELECTED
 import java.nio.charset.Charset
 import java.util.*
 import javax.swing.BorderFactory
-import javax.swing.JList
 
 object KafkaEditorUtils {
     fun createTextArea(
@@ -179,25 +182,32 @@ object KafkaEditorUtils {
             val scope = CoroutineScope(Dispatchers.Default + job)
             Disposer.register(rootDisposable) { job.cancel() }
 
-            topicCombobox.addItemListener {
-                if (it.stateChange != SELECTED)
-                    return@addItemListener
-
-                scope.launch {
-                    val schemaType = calculateSchemaTypeForTopic(dataManager, topicCombobox, isKey)
-                        ?: KafkaFieldType.STRING
+            // Only the detection for the topic selected last counts, an earlier one may still be running.
+            var detection: Job? = null
+            fun startDetection(typeWithoutSchema: KafkaFieldType?) {
+                val topic = topicCombobox.item?.name
+                detection?.cancel()
+                detection = scope.launch {
+                    val schemaType = detectSchemaFieldType(
+                        topic = topic,
+                        isKey = isKey,
+                        listSchemaNames = { dataManager.getSchemaNamesForEditor().orEmpty() },
+                        getSchemaFormat = dataManager::getSchemaFormat
+                    ) ?: typeWithoutSchema ?: return@launch
                     runInEdt {
                         fieldsCombobox.selectedItem = schemaType
                     }
                 }
             }
 
-            scope.launch {
-                val schemaType = calculateSchemaTypeForTopic(dataManager, topicCombobox, isKey) ?: return@launch
-                runInEdt {
-                    fieldsCombobox.selectedItem = schemaType
-                }
+            topicCombobox.addItemListener {
+                if (it.stateChange != SELECTED)
+                    return@addItemListener
+
+                startDetection(typeWithoutSchema = KafkaFieldType.STRING)
             }
+
+            startDetection(typeWithoutSchema = null)
         }
 
         return fieldsCombobox
@@ -268,54 +278,36 @@ object KafkaEditorUtils {
         topicComboBox: ComboBox<TopicInEditor>,
         isKey: Boolean
     ): ComboBox<RegistrySchemaInEditor> {
-        var prevSchemaName: String? = null
         val schemaCombobox = ComboBox(arrayOf<RegistrySchemaInEditor>())
-
-        topicComboBox.name
         schemaCombobox.isSwingPopup = false
         schemaCombobox.toolTipText = KafkaMessagesBundle.message("registry.subject.combobox.default.name")
-        schemaCombobox.renderer = object : ColoredListCellRenderer<RegistrySchemaInEditor>() {
-            override fun customizeCellRenderer(
-                list: JList<out RegistrySchemaInEditor>,
-                value: RegistrySchemaInEditor?,
-                index: Int,
-                selected: Boolean,
-                hasFocus: Boolean
-            ) {
-                val registrySchemaInEditor = value ?: return
 
-                append(registrySchemaInEditor.schemaName + "  ")
-                append(registrySchemaInEditor.schemaFormat?.presentable ?: "", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+        // Names come first and the formats follow, see SchemaComboBoxLoader. Without a registry there is nothing to list.
+        val loader = if (kafkaManager.registryType != KafkaRegistryType.NONE) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            Disposer.register(rootDisposable) { scope.cancel() }
+            SchemaComboBoxLoader(schemaCombobox, kafkaManager, scope, isKey) { topicComboBox.item?.name }
+        } else {
+            schemaCombobox.renderer = SchemaListCellRenderer(isListing = { false }, formatWanted = {})
+            null
+        }
+
+        if (loader != null) {
+            val registryListener = object : DataModelListener {
+                override fun onChangedNonEdt() = loader.reload()
+                override fun onError(msg: String, e: Throwable?) = loader.reload()
             }
-        }
-
-        val listener = KafkaDataModelListener(schemaCombobox) {
-            val prevSchema = schemaCombobox.item?.schemaName?.takeIf { it.isNotEmpty() }
-            prevSchema?.let { prevSchemaName = it }
-            calculateSchemasForCombobox(kafkaManager, topicComboBox, isKey, prevSchemaName)
-        }
-
-        executeNotOnEdt {
-            listener.onChangedNonEdt()
-        }
-
-        kafkaManager.schemaRegistryModel?.addListener(listener)
-        Disposer.register(rootDisposable) {
-            kafkaManager.schemaRegistryModel?.removeListener(listener)
-        }
-
-        topicComboBox.addItemListener {
-            if (it.stateChange != SELECTED)
-                return@addItemListener
-            prevSchemaName = null
-            updateComboBox(schemaCombobox) {
-                calculateSchemasForCombobox(
-                    kafkaManager,
-                    topicComboBox,
-                    isKey,
-                    prevSchemaName
-                )
+            kafkaManager.schemaRegistryModel?.addListener(registryListener)
+            Disposer.register(rootDisposable) {
+                kafkaManager.schemaRegistryModel?.removeListener(registryListener)
             }
+
+            topicComboBox.addItemListener {
+                if (it.stateChange == SELECTED)
+                    loader.load(topicChanged = true)
+            }
+
+            loader.load()
         }
 
         kafkaManager.initRefreshSchemasIfRequired()
@@ -328,47 +320,84 @@ object KafkaEditorUtils {
         return schemaCombobox
     }
 
-    private suspend fun calculateSchemaTypeForTopic(
-        kafkaManager: BaseClusterDataManager,
-        topicComboBox: ComboBox<TopicInEditor>,
-        isKey: Boolean
+    /**
+     * Format of the schema selected in [comboBox].
+     *
+     * The list shows the names before it knows the formats, so the selected schema may not have its format yet.
+     * This asks for it, which must be done before a format is used, e.g. to produce or to show consumed records.
+     */
+    suspend fun resolveSelectedFormat(
+        comboBox: ComboBox<RegistrySchemaInEditor>,
+        source: SchemaFormats
+    ): KafkaRegistryFormat? {
+        val item = comboBox.item ?: return null
+        item.schemaFormat?.let { return it }
+        return source.getSchemaFormat(item.schemaName)?.also { item.schemaFormat = it }
+    }
+
+    /**
+     * Field type to suggest for the [topic]: the schema registry one when the registry has a schema for the topic.
+     *
+     * Costs the names of the schemas, which the editors list once for all of them, and the details of at most one of
+     * them, so it stays cheap on big registries.
+     */
+    internal suspend fun detectSchemaFieldType(
+        topic: String?,
+        isKey: Boolean,
+        listSchemaNames: suspend (topic: String) -> List<String>,
+        getSchemaFormat: suspend (String) -> KafkaRegistryFormat?
     ): KafkaFieldType? {
-        val schema =
-            calculateTopicSchemaName(kafkaManager, topicComboBox.item?.name ?: "", isKey, schemas = null) ?: return null
-        val type = kafkaManager.getCachedOrLoadSchema(schema).type
-        return if (type != null)
-            KafkaFieldType.SCHEMA_REGISTRY
-        else
+        if (topic.isNullOrEmpty())
+            return null
+
+        val schemaName = findTopicSchemaName(listSchemaNames(topic), topic, isKey) ?: return null
+        return try {
+            if (getSchemaFormat(schemaName) != null) KafkaFieldType.SCHEMA_REGISTRY else null
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            thisLogger().warn("Failed to detect the type of schema '$schemaName'", e)
             null
+        }
     }
 
-    private fun calculateSchemasForCombobox(
-        kafkaManager: BaseClusterDataManager,
-        topicComboBox: ComboBox<TopicInEditor>,
-        isKey: Boolean,
-        prevSchema: String?
-    ): Pair<List<RegistrySchemaInEditor>, Int?> {
-        val schemas = kafkaManager.getSchemasForEditor()
-
-        val preferSchemaName =
-            prevSchema ?: calculateTopicSchemaName(kafkaManager, topicComboBox.item?.name ?: "", isKey, schemas)
-        val index = schemas.indexOfFirst { it.schemaName == preferSchemaName }.takeIf { it >= 0 }
-        return schemas to index
-    }
-
-    private fun calculateTopicSchemaName(
-        kafkaManager: BaseClusterDataManager,
-        topic: String,
-        isKey: Boolean,
-        schemas: List<RegistrySchemaInEditor>?
-    ): String? {
-        val schemasNames = (schemas ?: kafkaManager.getSchemasForEditor()).map { it.schemaName }
+    /** Name of the schema that belongs to the [topic] by the naming convention of the registry, if there is one. */
+    internal fun findTopicSchemaName(schemaNames: Collection<String>, topic: String, isKey: Boolean): String? {
         val confluentSchemaName = if (isKey) "$topic-key" else "$topic-value"
-        if (confluentSchemaName in schemasNames)
+        if (confluentSchemaName in schemaNames)
             return confluentSchemaName
-        if (!isKey && topic in schemasNames)
+        if (!isKey && topic in schemaNames)
             return topic
         return null
+    }
+
+    /**
+     * Selects the schema called [schemaName], matching by name only.
+     *
+     * A combo box silently ignores an item it does not contain, and a schema of the same name but with another
+     * format (e.g. one that is not resolved yet) is not the same item. If the list does not hold the schema yet
+     * because it is still loading, the schema is added to it, so the selection survives the refresh of the list.
+     */
+    fun selectSchemaByName(
+        comboBox: ComboBox<RegistrySchemaInEditor>,
+        schemaName: String,
+        format: KafkaRegistryFormat?
+    ) {
+        if (schemaName.isEmpty())
+            return
+
+        val model = comboBox.model
+        val known = (0 until model.size).map { model.getElementAt(it) }.firstOrNull { it.schemaName == schemaName }
+        if (known != null) {
+            comboBox.item = known
+            return
+        }
+
+        val pending = RegistrySchemaInEditor(schemaName = schemaName, schemaFormat = format)
+        comboBox.addItem(pending)
+        comboBox.item = pending
     }
 
     fun <T> updateEditableComboBox(comboBox: ComboBox<T>, newData: List<T>) {

@@ -26,7 +26,6 @@ import com.intellij.ui.layout.selectedValueMatches
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import io.confluent.intellijplugin.common.editor.KafkaEditorUtils
 import io.confluent.intellijplugin.common.models.KafkaFieldType
-import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.common.settings.StorageProducerConfig
 import io.confluent.intellijplugin.completion.KafkaProducerGeneratorCompletionProvider
 import io.confluent.intellijplugin.consumer.models.ConsumerProducerFieldConfig
@@ -173,7 +172,11 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
         val fieldType = fieldTypeComboBox.item
         val registryType = kafkaManager.registryType
         val schemaName = schemaComboBox.item?.schemaName ?: ""
-        val schemaFormat = schemaComboBox.item?.schemaFormat ?: KafkaRegistryFormat.UNKNOWN
+        // The serializer depends on the format, and the list may not have got to the selected schema yet.
+        val schemaFormat = when (fieldType) {
+            KafkaFieldType.SCHEMA_REGISTRY -> KafkaEditorUtils.resolveSelectedFormat(schemaComboBox, kafkaManager)
+            else -> schemaComboBox.item?.schemaFormat
+        } ?: KafkaRegistryFormat.UNKNOWN
 
         val schema = when (fieldType) {
             null, KafkaFieldType.STRING, KafkaFieldType.JSON, KafkaFieldType.LONG, KafkaFieldType.INTEGER,
@@ -395,10 +398,10 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
             KafkaFieldType.NULL -> Unit
             KafkaFieldType.SCHEMA_REGISTRY -> {
                 jsonField.text = text
-                schemaComboBox.item = if (isKey)
-                    RegistrySchemaInEditor(config.keySubject, config.takeKeyFormat())
-                else
-                    RegistrySchemaInEditor(config.valueSubject, config.takeValueFormat())
+                val subject = if (isKey) config.keySubject else config.valueSubject
+                KafkaEditorUtils.selectSchemaByName(
+                    schemaComboBox, subject, if (isKey) config.takeKeyFormat() else config.takeValueFormat()
+                )
             }
 
             KafkaFieldType.AVRO_CUSTOM, KafkaFieldType.PROTOBUF_CUSTOM -> {

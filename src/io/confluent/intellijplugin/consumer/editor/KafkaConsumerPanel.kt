@@ -359,6 +359,8 @@ class KafkaConsumerPanel(
     }
 
     private suspend fun startConsume(project: Project?) {
+        key.resolveSchemaFormat()
+        value.resolveSchemaFormat()
         val runConfig = getRunConfig()
 
         if (runConfig.topic.isNullOrBlank()) {

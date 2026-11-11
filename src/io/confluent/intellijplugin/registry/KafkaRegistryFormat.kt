@@ -23,5 +23,13 @@ enum class KafkaRegistryFormat(@Nls val presentable: String) {
             "JSON" -> JSON
             else -> UNKNOWN
         }
+
+        /**
+         * Like [fromSchemaType], for a schema whose details are loaded separately from its name (Confluent Cloud).
+         * A missing type only means Avro once the details were loaded, which is when the schema has a version.
+         * Before that nothing is known about the format, and calling it Avro would label every schema that way.
+         */
+        fun fromLoadedSchemaType(version: Int?, type: String?): KafkaRegistryFormat? =
+            version?.let { fromSchemaType(type) }
     }
 }

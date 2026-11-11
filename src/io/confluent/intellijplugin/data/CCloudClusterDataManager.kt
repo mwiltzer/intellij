@@ -2,12 +2,12 @@ package io.confluent.intellijplugin.data
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import io.confluent.intellijplugin.ccloud.cache.DataPlaneCache
@@ -23,7 +23,6 @@ import io.confluent.intellijplugin.ccloud.model.response.TopicEnrichmentResult
 import io.confluent.intellijplugin.ccloud.model.response.toPresentable
 import io.confluent.intellijplugin.ccloud.model.response.toSchemaReferences
 import io.confluent.intellijplugin.client.KafkaConstants
-import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.core.monitoring.data.model.FieldGroupsData
 import io.confluent.intellijplugin.core.monitoring.data.storage.ObjectDataModelStorage
 import io.confluent.intellijplugin.consumer.editor.KafkaConsumerSettings
@@ -46,6 +45,7 @@ import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaReference
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
+import io.confluent.intellijplugin.registry.common.hasLoadedDetails
 import io.confluent.intellijplugin.rfs.ConfluentConnectionData
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import kotlinx.coroutines.CancellationException
@@ -84,17 +84,18 @@ class CCloudClusterDataManager(
     private var schemaEnrichmentJob: Job? = null
     private val partitionCache = ConcurrentHashMap<String, List<BdtTopicPartition>>()
     private val schemaVersionCache = ConcurrentHashMap<Pair<String, Long>, SchemaVersionInfo>()
-    private val schemaTypeCache = ConcurrentHashMap<String, KafkaRegistryFormat>()
 
     private fun invalidateSchemaVersionCache(schemaName: String) {
         schemaVersionCache.keys.removeIf { it.first == schemaName }
-        schemaTypeCache.remove(schemaName)
+        schemaFormats.remove(schemaName)
+        invalidateSchemaNames()
     }
 
     /** Clear all cached schema versions (called during refresh). */
     fun clearAllVersionCaches() {
         schemaVersionCache.clear()
-        schemaTypeCache.clear()
+        schemaFormats.clear()
+        invalidateSchemaNames()
     }
 
     override val connectionId: String = cluster.id
@@ -319,7 +320,7 @@ class CCloudClusterDataManager(
                 var result = schemas.map { schemaData ->
                     KafkaSchemaInfo(
                         name = schemaData.name,
-                        type = KafkaRegistryFormat.fromSchemaType(schemaData.schemaType),
+                        type = KafkaRegistryFormat.fromLoadedSchemaType(schemaData.latestVersion, schemaData.schemaType),
                         version = schemaData.latestVersion?.toLong(),
                         compatibility = schemaData.compatibility,
                         isFavorite = config?.schemasPined?.contains(schemaData.name) == true
@@ -365,8 +366,11 @@ class CCloudClusterDataManager(
 
                             dataPlaneCache.updateSchemaInCache(result.schemaName, result.data)
 
-                            val schemaType = KafkaRegistryFormat.fromSchemaType(result.data.schemaType)
-                            schemaTypeCache[result.schemaName] = schemaType
+                            // A failed load comes back without details, and that tells nothing about the format.
+                            val schemaType = KafkaRegistryFormat.fromLoadedSchemaType(
+                                result.data.latestVersion, result.data.schemaType
+                            )
+                            schemaType?.let { schemaFormats.put(result.schemaName, it) }
 
                             invokeLaterIfNotDisposed {
                                 val currentSchemas = model.data ?: return@invokeLaterIfNotDisposed
@@ -466,38 +470,6 @@ class CCloudClusterDataManager(
         throw UnsupportedOperationException("Get offsets for timestamp not supported for Confluent Cloud")
     }
 
-    @RequiresBackgroundThread
-    override fun getSchemasForEditor(): List<RegistrySchemaInEditor> {
-        if (!dataPlaneCache.hasSchemaRegistry()) {
-            return emptyList()
-        }
-
-        return try {
-            val schemas = getSchemas()
-            schemas.map { schema ->
-                val schemaFormat = schema.type
-                    ?: runBlockingMaybeCancellable { getCachedOrLoadSchemaType(schema.name) }
-                    ?: KafkaRegistryFormat.UNKNOWN
-                RegistrySchemaInEditor(
-                    schemaName = schema.name,
-                    schemaFormat = schemaFormat
-                )
-            }.sorted()
-        } catch (e: ProcessCanceledException) {
-            throw e  // Re-throw cancellation to preserve IDE cancellation semantics
-        } catch (e: CancellationException) {
-            throw e  // Re-throw coroutine cancellation
-        } catch (e: Exception) {
-            thisLogger().warn("Failed to get schemas for editor in cluster ${cluster.id}", e)
-            emptyList()
-        }
-    }
-
-    private suspend fun getCachedOrLoadSchemaType(name: String): KafkaRegistryFormat? =
-        schemaTypeCache[name] ?: getCachedOrLoadSchema(name).type?.also {
-            schemaTypeCache[name] = it
-        }
-
     override suspend fun getLatestVersionInfo(schemaName: String): SchemaVersionInfo? {
         if (!dataPlaneCache.hasSchemaRegistry()) {
             return null
@@ -572,24 +544,30 @@ class CCloudClusterDataManager(
             throw UnsupportedOperationException("Schema registry not configured for this cluster")
         }
 
-        val cached = getCachedSchema(name)
-        if (cached != null && !cached.isSoftDeleted) {
-            return cached
+        // An entry that only has a name (its details come from the enrichment later) is not good enough.
+        getCachedSchema(name)?.takeIf { it.hasLoadedDetails() }?.let { return it }
+
+        return loadSchemaDetails(name)
+    }
+
+    override suspend fun loadSchemaDetails(name: String): KafkaSchemaInfo {
+        if (!dataPlaneCache.hasSchemaRegistry()) {
+            throw UnsupportedOperationException("Schema registry not configured for this cluster")
         }
 
-        // Load from API if not cached or incomplete
         return try {
             withContext(Dispatchers.IO) {
                 val schemaData = dataPlaneCache.getFetcher()?.loadSchemaInfo(name)
                 // Use SR config (not cluster config) so all clusters sharing an SR see the same favorites
                 val config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId())
 
-                schemaData?.let {
+                schemaData?.let { data ->
                     KafkaSchemaInfo(
-                        name = it.name,
-                        type = KafkaRegistryFormat.fromSchemaType(it.schemaType),
-                        version = it.latestVersion?.toLong(),
-                        isFavorite = config?.schemasPined?.contains(it.name) == true
+                        name = data.name,
+                        // The fetcher swallows a failed load and answers with the name only.
+                        type = KafkaRegistryFormat.fromLoadedSchemaType(data.latestVersion, data.schemaType),
+                        version = data.latestVersion?.toLong(),
+                        isFavorite = config?.schemasPined?.contains(data.name) == true
                     )
                 } ?: throw IllegalArgumentException(KafkaMessagesBundle.message("error.schema.not.found", name))
             }
@@ -924,7 +902,6 @@ class CCloudClusterDataManager(
         partitionEnrichmentJobs.clear()
         partitionCache.clear()
         schemaVersionCache.clear()
-        schemaTypeCache.clear()
     }
 }
 

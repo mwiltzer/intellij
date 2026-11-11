@@ -194,6 +194,12 @@ favorite: right-click a topic and select **Add to Favorites**.
       For example, you can use `"${random.integer(1,10)}"` to generate a random integer between 1 and 10.
       <img src="images/kafka_random_value.png" alt="Kafka random keyword" width="500"/>
 
+   The schema list shows the schema names as soon as the Schema Registry has listed them, and the names of the last
+   listing right away while it is asked again. The format of a schema (Avro, Protobuf, or JSON) is looked up for the
+   selected schema, the schema of the topic, and the schemas that the list shows on screen, so on a Schema Registry
+   with thousands of schemas it can take a moment to appear. If a schema that you chose or saved in an editor no
+   longer exists in the Schema Registry, the schema field stays empty instead of showing another schema.
+
 7. Under **Headers**, provide any custom headers. If you have them in JSON or CSV format, you can paste them into this
    section.
 8. Under **Flow**, you can control the record flow:

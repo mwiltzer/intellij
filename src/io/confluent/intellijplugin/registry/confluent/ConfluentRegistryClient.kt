@@ -9,6 +9,7 @@ import io.confluent.intellijplugin.core.connection.exception.BdtConfigurationExc
 import io.confluent.intellijplugin.core.connection.tunnel.BdtSshTunnelService
 import io.confluent.intellijplugin.core.rfs.driver.runBlockingInterruptible
 import io.confluent.intellijplugin.core.settings.components.BdtPropertyComponent
+import io.confluent.intellijplugin.core.util.toPresentableText
 import io.confluent.intellijplugin.data.KafkaDataManager.Companion.sortedSchemas
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
@@ -20,13 +21,15 @@ import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClientConfig
 import io.confluent.kafka.schemaregistry.client.rest.RestService
+import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig
 import org.apache.kafka.common.config.ConfigDef
+import java.net.HttpURLConnection
 
 class ConfluentRegistryClient(restService: RestService, props: Map<String, String>) : Disposable {
     val internalClient = CachedSchemaRegistryClient(
         restService,
-        100,
+        SCHEMA_CACHE_CAPACITY,
         KafkaRegistryUtil.getRegistrySchemaProviders(),
         props, null
     )
@@ -58,7 +61,7 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
         val meta = try {
             internalClient.getLatestSchemaMetadata(schemaName)
         } catch (t: Throwable) {
-            thisLogger().info("Cannot request schemaMeta for $schemaName")
+            logLoadFailure(schemaName, t)
             null
         }
         meta ?: return KafkaSchemaInfo.createEmpty(schemaName)
@@ -118,6 +121,16 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
         )
     }
 
+    // A subject that is gone is no news; anything else points at a problem with the registry or the credentials.
+    private fun logLoadFailure(schemaName: String, t: Throwable) {
+        if ((t as? RestClientException)?.status == HttpURLConnection.HTTP_NOT_FOUND) {
+            thisLogger().info("Schema '$schemaName' was not found")
+        } else {
+            thisLogger().warn("Cannot request schemaMeta for $schemaName: ${t.toPresentableText()}")
+            thisLogger().debug(t)
+        }
+    }
+
     companion object {
         // Same values as the library defaults, made explicit; user-supplied registry properties override these.
         internal val DEFAULT_HTTP_PROPS = mapOf(
@@ -131,6 +144,12 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
             brokerSsl: Map<String, String>,
             registryProps: Map<String, String>,
         ): Map<String, String> = DEFAULT_HTTP_PROPS + brokerSettings + brokerSsl + registryProps
+
+        /**
+         * How many schemas the client remembers. It was 100, which is too small for a registry with more
+         * subjects: going through them (e.g. to find out their formats) then requested every subject again and again.
+         */
+        private const val SCHEMA_CACHE_CAPACITY = 1000
 
         fun createFor(project: Project?, connectionData: KafkaConnectionData, testConnection: Boolean) =
             createConfluentClient(connectionData, project, testConnection)
