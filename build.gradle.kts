@@ -4,7 +4,10 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 rootProject.extensions.add("gradle.version", "8.14.3")
 rootProject.extensions.add("kotlin.jvmTarget", "21")
-rootProject.extensions.add("kotlin.freeCompilerArgs", listOf("-Xjvm-default=all"))
+// first-only: annotations on constructor properties keep the targets they have always had. That is what Kotlin 2.2 does
+// by default as well, but it warns about every such annotation. The settings classes depend on where their annotations
+// land, so a change of that should be made on purpose, not by the default of a future Kotlin version.
+rootProject.extensions.add("kotlin.freeCompilerArgs", listOf("-Xjvm-default=all", "-Xannotation-default-target=first-only"))
 rootProject.extensions.add("java.sourceCompatibility", "21")
 rootProject.extensions.add("java.targetCompatibility", "21")
 
@@ -13,7 +16,7 @@ plugins {
     id("org.jetbrains.kotlin.jvm")
     kotlin("plugin.serialization") version "2.2.21"
     id("org.jetbrains.intellij.platform") version "2.9.0"
-    id("io.sentry.jvm.gradle") version "5.12.1"
+    id("io.sentry.jvm.gradle") version "5.12.2"
     id("org.openapi.generator") version "7.19.0"
     id("jacoco")
 }
