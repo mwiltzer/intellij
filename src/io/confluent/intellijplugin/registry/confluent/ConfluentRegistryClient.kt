@@ -20,10 +20,12 @@ import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClientConfig
 import io.confluent.kafka.schemaregistry.client.rest.RestService
+import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig
 import org.apache.kafka.common.config.ConfigDef
+import java.net.HttpURLConnection
 
-class ConfluentRegistryClient(restService: RestService, props: Map<String, String>) : Disposable {
+class ConfluentRegistryClient(private val restService: RestService, props: Map<String, String>) : Disposable {
     val internalClient = CachedSchemaRegistryClient(
         restService,
         100,
@@ -33,9 +35,19 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
 
     override fun dispose() {}
 
+    /**
+     * Checks that the registry answers and lets us list its subjects, with one subject. The connection is checked every
+     * time it is connected or refreshed, and listing all subjects of a registry with thousands takes seconds.
+     * A registry that does not accept the page parameters is checked with all subjects, as it always was.
+     */
     fun checkConnection() {
         runBlockingInterruptible {
-            internalClient.getAllSubjects()
+            try {
+                restService.getAllSubjectsWithPagination(0, 1)
+            } catch (e: RestClientException) {
+                if (e.status !in QUERY_PARAMETERS_REFUSED) throw e
+                internalClient.getAllSubjects()
+            }
         }
     }
 
@@ -131,6 +143,9 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
             brokerSsl: Map<String, String>,
             registryProps: Map<String, String>,
         ): Map<String, String> = DEFAULT_HTTP_PROPS + brokerSettings + brokerSsl + registryProps
+
+        // What a registry answers when it does not know a parameter of a request for the subjects, e.g. the page.
+        private val QUERY_PARAMETERS_REFUSED = setOf(HttpURLConnection.HTTP_BAD_REQUEST, 422)
 
         fun createFor(project: Project?, connectionData: KafkaConnectionData, testConnection: Boolean) =
             createConfluentClient(connectionData, project, testConnection)

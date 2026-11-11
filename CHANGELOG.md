@@ -8,6 +8,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - Confluent Cloud requests are now retried with exponential backoff and jitter, honoring `Retry-After`: on rate limiting (429) for any request, and on temporary server errors (502/503/504) and connection failures for read requests. If the server asks to wait more than a minute, the request fails right away instead of retrying sooner than asked.
 - Tool window auto-refresh now varies each interval by up to ±20%. While a connection is unreachable, auto-refresh keeps re-checking it, waiting progressively longer (up to about 5 minutes), and resumes the normal interval once the connection recovers. Connections that use an SSH tunnel are not re-checked automatically; use Refresh to reconnect them.
 - Upgrade Apache Kafka client to 4.1.2 (required by the Schema Registry client's OAuth token provider)
+- Testing the connection to a Confluent Schema Registry asks for a single subject instead of listing all of them
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
