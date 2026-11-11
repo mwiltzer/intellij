@@ -14,8 +14,8 @@ State of 2026-11-11. This file exists only on the branch `handoff/pr-split`. Tha
   request. All branches are pushed to `origin`. No pull request exists yet.
 - Every branch passes the full test suite on its own. Merging all of them gives exactly the backup, apart from the two
   intended differences listed below; that merge passes all 2,666 tests and `buildPlugin`.
-- **Next step:** open the pull requests and merge them in the order of the merge plan below. First ask the user whether
-  the pull requests target the fork (`mwiltzer/intellij:main`, the plan so far) or upstream `confluentinc/intellij`.
+- **Decided on 2026-11-11: upstream first, the fork as fallback.** The pull requests go to `confluentinc/intellij`;
+  whatever upstream does not take lives on in the fork. **Next step:** step 1 of the upstream plan below.
 - What changed for users is listed in `CHANGELOG.md` (section Unreleased) and documented in
   `docs/kafka-plugin-manual.md` on this branch.
 
@@ -72,9 +72,77 @@ main
 | –   | `handoff/pr-split`                     | backup   | –          | The backup plus this note. Never merge it.                                                                                                                                                                                                                   | –            |
 
 All of them merged together: **2,666 tests, 0 failures, 2 known skips, `buildPlugin` OK.** The commit message of each
-branch is written to serve as the description of its pull request.
+branch is written to serve as the description of its pull request. The commit IDs are those before the rebase onto
+upstream (step 2 of the upstream plan). Once `integration` exists, it replaces `handoff/pr-split` as the branch with
+everything.
 
-## Merge plan
+## Upstream plan (decided 2026-11-11)
+
+The user wants the work in the original repository, `confluentinc/intellij`. Whatever the maintainers do not want stays
+in the fork. The fork is set up so that this needs no switch later:
+
+- The fork's `main` stays a plain mirror of upstream `main`: only fast-forwarded, never committed to.
+- A branch `integration` (still to be created) is upstream `main` plus all branches, merged in the order of the next
+  section. It is the plugin the user builds and installs, from the first day on. Rebuild it whenever upstream `main`
+  or a branch changes; a branch that upstream merged no longer adds anything to it.
+
+### Facts on 2026-11-11
+
+- Upstream `main` is `10188f28`, 14 commits ahead of the fork's `main` (`6ece6f79`), which has not diverged.
+- 13 files that upstream changed since then are changed by our branches too: `CHANGELOG.md`,
+  `KafkaBundle.properties`, `ccloud/fetcher/DataPlaneFetcher.kt`, `DataPlaneFetcherImpl.kt` (+ test),
+  `client/KafkaClient.kt`, `consumer/client/CCloudConsumerClient.kt` (+ test), `data/CCloudClusterDataManager.kt`,
+  `data/KafkaDataManager.kt`, `producer/editor/KafkaProducerEditor.kt`, `registry/KafkaRegistryUtil.kt` and
+  `registry/confluent/ConfluentRegistryClient.kt`. The upstream changes behind them: #652 bounds the Schema Registry
+  calls and makes the HTTP timeouts explicit, #651 bounds the TCP probe before connecting, #657, #659, #660, #661 and
+  #669 retry Confluent Cloud requests, #656 reports producer send timeouts.
+- `CONTRIBUTING.md`: no pull request without an associated issue; introduce yourself and how you use the plugin;
+  self-review (there is a `/pr-review` skill in `.claude/skills`); click-test happy and sad paths; a title that reads
+  well in a changelog; a summary without many bullet points; screenshots for UI changes; for a contribution in several
+  branches, say how each piece is used later. `AI_POLICY.md`: AI is welcome, slop gets closed (massive pull requests,
+  long bullet lists, new patterns without reason, pull requests without an issue).
+- Pull requests of outside contributors do get merged, features too (e.g. #646 MessagePack, #636).
+- No upstream issue covers OAuth for the Schema Registry yet. #65 (OAUTHBEARER with a custom SASL login callback) is
+  related, but about Kafka itself.
+- The plugin is Apache-2.0: building and using a fork is allowed.
+
+### Steps
+
+1. Fast-forward the fork's `main` to upstream `main` and push it.
+2. Rebase `oauth-4-schem-reg` onto the new `main`, then every other branch onto its rebased parent:
+   `git rebase --onto <new parent> <old parent commit from the branch table> <branch>`, or the whole stack at once with
+   `--update-refs`. Rebase `backup/all-optimizations` (one commit on top of `oauth-4-schem-reg`) as well and resolve
+   its conflicts once: it is the combined code of everything, so afterwards it is again the exact reference for every
+   file. Resolve the conflicts of the branches in the files above, run the full suite for every branch, and push with
+   `--force-with-lease` (ask first).
+3. Build `integration` from the rebased branches in the order of the next section and test it;
+   `git diff integration backup/all-optimizations` must show only the two intended differences. Push it. From then on
+   the user builds and installs that one.
+4. Draft one upstream issue for the user to post: who the user is and how they use the plugin, the problems (no OAuth
+   for the Schema Registry; loading, detecting and listing schemas is slow with thousands of subjects), and the
+   planned series of small pull requests along the branch table. Ask the maintainers which pieces they want and in
+   which order.
+5. Then one pull request at a time, each linked to the issue, rebased on upstream `main`, following
+   `.github/pull_request_template.md`. First the small fixes (L2, L5, L6, L3, L12) and OAuth (O; ask whether to reword
+   its first commit "adding oauth funct."), then the rest, the stack layer by layer, each after its parent is merged,
+   saying in the description what comes next. Expect requests to split the big ones: S1 (+3.1k lines), L14 (+2.2k)
+   and S5 (+2.0k), most of it tests.
+6. A merged pull request drops out of `integration` at its next rebuild. Declined ones, and ones without an answer
+   (ping after 2–3 weeks), stay in the fork only.
+
+Cautions:
+
+- Before step 4 the user checks that their employer or client agrees to contributing this code.
+- Own builds: `./gradlew buildPlugin`, then Settings → Plugins → Install Plugin from Disk. Turn off automatic plugin
+  updates, or skip the update of this plugin, otherwise the next Confluent release replaces the build. Never publish it
+  under Confluent's plugin ID or name.
+
+## Merge order and conflicts
+
+This order and the conflict table are what building `integration` needs, and any other merge of all branches. The
+fork's `main` is never merged into; it stays a mirror of upstream. After the rebase onto upstream (step 2 above),
+expect the conflicts to have moved a little, and use only the rebased backup as reference: the old one lacks the
+upstream changes, so taking a file from it would drop them.
 
 ### Order
 
@@ -85,8 +153,8 @@ branch is written to serve as the description of its pull request.
 4. Branches that collide with the stack: L4, L13, L11.
 5. L14 last.
 
-Why: the stack is the biggest part, so it should not be the one that is rebased. The branches merged after it are small
-single commits. L14 goes last because it collides with the most branches; at that point every other branch that
+Why: in this order the stack, the biggest part, goes in unchanged, and every code conflict comes up in a small
+single-commit branch. L14 goes last because it collides with the most branches; at that point every other branch that
 touches its files is merged, so the backup version of each such file is the exact resolution.
 
 ### Conflicts to expect in this order
@@ -113,28 +181,15 @@ merge of all branches. The intermediate states of this order have not been built
 resolution, run the full test suite (see Verification). A cheap first step is to replay the order locally on a
 throwaway branch and test after every resolved conflict.
 
-### How to merge
+### If the fork becomes the main line
 
-Ask the user which of these to use.
-
-- **Into the fork, merging locally (fewest steps).** Open the pull requests for review with base `main` (a stacked one
-  then also shows the commits of its parents until they are merged; say in its description which pull request it
-  depends on, the single commit is in its Commits tab). Then merge the branches into `main` locally, in the order
-  above, with `git merge --no-ff <branch>`, resolve the conflicts in the merge commits, test, and push `main`. GitHub
-  marks a pull request as merged when its commit becomes part of its base branch, so no branch has to be rebased or
-  force-pushed.
-- **Into the fork, merging on GitHub.** Open the stacked pull requests (S1–S6, L9, L10, L14) with their parent branch
-  as base, so each one shows its single commit. Merge with "Create a merge commit" or "Rebase and merge". With squash
-  merges the children of a stacked pull request would show their parent's commit again and need
-  `git rebase --onto origin/main <old parent commit> <child>`. Deleting a merged branch makes GitHub retarget the pull
-  requests that were based on it to `main`. Before merging a pull request that conflicts, update its branch (rebase,
-  resolve, test, `git push --force-with-lease`, only with the user's consent) or use the "Resolve conflicts" button.
-- **Upstream (`confluentinc/intellij`).** Read `AI_POLICY.md` and `CONTRIBUTING.md` first: every pull request must be
-  attached to an issue (create one or ask to be assigned), descriptions must be short and follow
-  `.github/pull_request_template.md`, and massive pull requests get closed. A pull request into upstream can not use a
-  fork branch as its base, so the stack has to go in one pull request after the other, each rebased on upstream `main`
-  (`git remote add upstream https://github.com/confluentinc/intellij.git`). The first commit of `oauth-4-schem-reg`
-  has the message "adding oauth funct."; ask the user whether to reword it, which needs a force push.
+Only if the user gives up on upstream: merge the branches into the fork's `main` in this order with
+`git merge --no-ff <branch>`, resolving the conflicts in the merge commits. Pull requests in the fork with base `main`
+are then marked as merged when `main` is pushed, without rebasing or force-pushing any branch. For merges on GitHub
+instead, open the stacked pull requests (S1–S6, L9, L10, L14) with their parent branch as base and merge with a merge
+commit or "Rebase and merge", not with squash; deleting a merged branch retargets the pull requests based on it.
+A pull request into upstream can not use a fork branch as its base, which is why the upstream plan goes one pull
+request after the other (`git remote add upstream https://github.com/confluentinc/intellij.git`).
 
 ## Verification
 
@@ -188,7 +243,7 @@ L more.
 | Plugin Verifier in CI (253 and latest; IU, WebStorm, PyCharm, GoLand, Rider)                                                                | M     | S–M    | L    | Its own pull request. The 253 release shipped a `NoClassDefFoundError`; MigLayout is scheduled for removal (IDEA-306719) and used in 12 files.                                                                                   |
 | De-duplicate the data-manager flows (`deleteSchema` is copy-pasted) and extract a testable schema catalog                                   | M     | L      | M–H  | Skipped so far. The data managers can not be built in tests, so the cache invalidation is only covered indirectly.                                                                                                                 |
 | Merge the Kafka and Confluent Cloud schema-detail controllers (about 230 of 405 lines shared) and move them from MigLayout to the UI DSL     | L–M   | L      | M    | Skipped so far.                                                                                                                                                                                                                    |
-| Run the registry check in parallel with `describeCluster`; the TCP probe runs twice                                                         | L     | S–M    | M    | Skipped: little is left to gain since L13.                                                                                                                                                                                         |
+| Run the registry check in parallel with `describeCluster`; the TCP probe runs twice                                                         | L     | S–M    | M    | Skipped: little is left to gain since L13. Upstream #651 changed the probe; check what is left after the rebase.                                                                                                                  |
 | Delete about 28 unreferenced files (about 830 lines, e.g. `DateFilterPopupComponent`, `ClustersStorage`)                                    | L     | S      | L–M  | Skipped: would cause merge conflicts with upstream.                                                                                                                                                                                |
 | The random-data wand still writes Avro JSON with union wrappers                                                                             | L     | M      | M    | Since L9 the producer also accepts the plain form.                                                                                                                                                                                 |
 | Remaining deprecated API uses (e.g. `Disposer.isDisposed`)                                                                                  | L     | S      | L    | The ones this work introduced are fixed; older ones are left.                                                                                                                                                                      |
@@ -242,6 +297,13 @@ Known limitations:
 
 ## Continue on another machine
 
+Everything the work needs is on GitHub. The chats are not: they are in `~/.copilot/` (GitHub Copilot CLI; this
+session is `72e60e92-991e-49a9-804c-4ef9a5d8f3af`), `~/.junie/` (Junie), `~/.config/github-copilot/` (Copilot in the
+IDE) and `~/Library/Application Support/JetBrains/` (IDE settings, AI Assistant). macOS Migration Assistant moves all
+of them. Otherwise copy them with the IDE and the CLI closed, never through git or a cloud drive, because they hold
+login tokens. With the same user name and the repository at the same path as before, `copilot --resume 72e60e92`
+should continue that session with its memory (not tried across machines; this note works either way).
+
 ```bash
 git clone https://github.com/mwiltzer/intellij.git && cd intellij
 git switch handoff/pr-split            # this note plus the complete code
@@ -252,8 +314,8 @@ git switch handoff/pr-split            # this note plus the complete code
 A prompt for the new agent:
 
 > This is my fork of the Confluent Kafka plugin. Check out the branch `handoff/pr-split` and read `HANDOFF.md`
-> completely. Then continue with the merge plan described there. Ask me before pushing, force-pushing, opening pull
-> requests or merging.
+> completely. Then continue with the upstream plan described there, starting with step 1. Ask me before pushing,
+> force-pushing, opening pull requests or merging.
 
 ## Appendix: which branch owns what
 
