@@ -128,8 +128,9 @@ in the fork. The fork is set up so that this needs no switch later:
    to `DataPlaneFetcherImplTest`, because upstream imports it already. Watch for that kind of conflict in the next
    rebases: git reports no conflict when one side deletes an import that new code of the other side needs; only the
    compiler does. The OAuth client is built from upstream's merged properties (`mergeProps`), so the explicit HTTP
-   timeouts of #652 apply to it too. The heads before the rebase were kept as local tags `pre-sync/<branch>` on the
-   machine that did the rebase.
+   timeouts of #652 apply to it too. The heads before the rebase were kept as local tags `pre-sync/<branch>` until
+   everything was pushed and checked, and then deleted. On the machine that did the rebase, `git reflog <branch>`
+   lists them until about 2026-12-11.
 3. Build `integration` from the rebased branches in the order of the next section and test it;
    `git diff integration backup/all-optimizations` must show only the two intended differences. Push it. From then on
    the user builds and installs that one.
@@ -341,6 +342,11 @@ should continue that session with its memory (not tried across machines; this no
 ```bash
 git clone https://github.com/mwiltzer/intellij.git && cd intellij
 git switch handoff/pr-split            # this note plus the complete code
+# Remotes are not part of a clone. upstream: fetch only main (it has about 50 work branches), never push to it.
+git remote add upstream https://github.com/confluentinc/intellij.git
+git remote set-branches upstream main
+git remote set-url --push upstream DISABLED
+git fetch upstream
 # With jenv: point .java-version at a Temurin 21 that `jenv versions` lists. On the old machine it held
 # "temurin64-21.0.12.1". Never commit that file.
 ```
