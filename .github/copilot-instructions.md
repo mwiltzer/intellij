@@ -1,5 +1,9 @@
 # Confluent for JetBrains IDEs - AI Coding Agent Guide
 
+> **Handoff branch `handoff/pr-split`:** read [HANDOFF.md](../HANDOFF.md) before anything else. It describes the
+> ongoing split of this fork's work into pull requests: branches, merge order, expected conflicts and the open backlog.
+> Never open a pull request from this branch.
+
 ## Project Overview
 
 This is an IntelliJ IDEA plugin for Apache Kafka, providing a comprehensive UI for connecting to Kafka clusters,

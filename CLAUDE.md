@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+> **Handoff branch `handoff/pr-split`:** read [HANDOFF.md](HANDOFF.md) before anything else. It describes the ongoing
+> split of this fork's work into pull requests: branches, merge order, expected conflicts and the open backlog.
+> Never open a pull request from this branch.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
