@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.regex.PatternSyntaxException
 
 @TestApplication
 class ConsumerFilterTest {
@@ -633,6 +634,69 @@ class ConsumerFilterTest {
             )
             // empty headers list => any { it.contains("something") } => false
             assertFalse(filter.isRecordPassFilter(recordWithEmptyHeaders()))
+        }
+    }
+
+    @Nested
+    @DisplayName("Regex compilation")
+    inner class RegexCompilation {
+
+        private fun regexFilter(
+            key: String? = null,
+            value: String? = null,
+            headKey: String? = null,
+            headValue: String? = null
+        ) = ConsumerFilter(
+            filterKey = key,
+            filterValue = value,
+            filterHeadKey = headKey,
+            filterHeadValue = headValue,
+            type = ConsumerFilterType.REGEX
+        )
+
+        @Test
+        fun `should compile a pattern once and reuse it for every record`() {
+            val filter = regexFilter(value = "v.*")
+            val compiled = filter.pattern("v.*")
+
+            repeat(3) { assertTrue(filter.isRecordPassFilter(record(value = "value-$it"))) }
+
+            assertSame(compiled, filter.pattern("v.*"))
+        }
+
+        @Test
+        fun `should keep different patterns apart`() {
+            val filter = regexFilter()
+
+            assertNotSame(filter.pattern("a"), filter.pattern("b"))
+            assertTrue(filter.pattern("a").matches("a"))
+            assertFalse(filter.pattern("a").matches("b"))
+        }
+
+        @Test
+        fun `should keep rejecting an invalid pattern instead of caching a failure`() {
+            val filter = regexFilter(value = "foo(")
+
+            repeat(2) {
+                assertThrows(PatternSyntaxException::class.java) { filter.isRecordPassFilter(record(value = "foo")) }
+            }
+        }
+
+        @Test
+        fun `should not look at a header pattern when the record has no headers`() {
+            val filter = regexFilter(headKey = "foo(")
+
+            assertFalse(filter.isRecordPassFilter(record()))
+        }
+
+        @Test
+        fun `should match key value and headers with their own patterns`() {
+            val filter = regexFilter(key = "k-\\d+", value = "v-\\d+", headKey = "h-.*", headValue = "x-\\d+")
+            val headers = RecordHeaders().apply { add("h-1", "x-1".toByteArray()) }
+
+            assertTrue(filter.isRecordPassFilter(record(key = "k-7", value = "v-8", headers = headers)))
+            assertFalse(filter.isRecordPassFilter(record(key = "k-7", value = "other", headers = headers)))
+            assertFalse(filter.isRecordPassFilter(record(key = "k-7", value = "v-8")))
         }
     }
 }

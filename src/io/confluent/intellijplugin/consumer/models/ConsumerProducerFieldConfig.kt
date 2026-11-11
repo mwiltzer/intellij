@@ -1,6 +1,7 @@
 package io.confluent.intellijplugin.consumer.models
 
 import com.amazonaws.services.schemaregistry.serializers.json.JsonDataWithSchema
+import io.confluent.intellijplugin.common.editor.KafkaEditorUtils
 import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
@@ -25,6 +26,13 @@ data class ConsumerProducerFieldConfig(
     val schemaFormat: KafkaRegistryFormat,
     val parsedSchema: ParsedSchema?
 ) {
+    /** The text a consumed [value] is shown with, e.g. in the table of the consumer. */
+    fun shownText(value: Any): String = try {
+        KafkaEditorUtils.getValueAsString(type, value, schemaFormat)
+    } catch (_: Exception) {
+        value.toString()
+    }
+
     fun getValueObj() = when (type) {
         KafkaFieldType.STRING -> valueText.ifEmpty { null }
         KafkaFieldType.JSON -> valueText

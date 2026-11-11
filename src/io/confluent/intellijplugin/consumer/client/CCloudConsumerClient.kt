@@ -155,9 +155,12 @@ class CCloudConsumerClient(
         // Using Dispatchers.IO for network operations
         consumerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+        // Asked about every record, so it is built once for the run.
+        val passesFilter = config.getFilter().predicateFor(keyConfig, valueConfig)
+
         pollingJob = consumerScope!!.launch {
             try {
-                pollLoop(config, partitionFilter, consume, timestampUpdate, consumeError)
+                pollLoop(config, partitionFilter, passesFilter, consume, timestampUpdate, consumeError)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -172,6 +175,7 @@ class CCloudConsumerClient(
     private suspend fun pollLoop(
         config: StorageConsumerConfig,
         partitionFilter: Set<Int>?,
+        passesFilter: (ConsumerRecord<Any, Any>) -> Boolean,
         consume: (Long, List<ConsumerRecord<Any, Any>>) -> Unit,
         timestampUpdate: () -> Unit,
         consumeError: (Throwable, Int?, Long?) -> Unit
@@ -234,8 +238,7 @@ class CCloudConsumerClient(
                 }
 
                 // Apply filters (client-side)
-                val filter = config.getFilter()
-                val filteredRecords = allRecords.filter { filter.isRecordPassFilter(it) }
+                val filteredRecords = allRecords.filter(passesFilter)
 
                 if (filteredRecords.isNotEmpty()) {
                     consume(pollTime, filteredRecords)

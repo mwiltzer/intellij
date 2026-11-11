@@ -8,9 +8,11 @@ All noteworthy changes to this plugin will be documented in this file.
 - Confluent Cloud requests are now retried with exponential backoff and jitter, honoring `Retry-After`: on rate limiting (429) for any request, and on temporary server errors (502/503/504) and connection failures for read requests. If the server asks to wait more than a minute, the request fails right away instead of retrying sooner than asked.
 - Tool window auto-refresh now varies each interval by up to ±20%. While a connection is unreachable, auto-refresh keeps re-checking it, waiting progressively longer (up to about 5 minutes), and resumes the normal interval once the connection recovers. Connections that use an SSH tunnel are not re-checked automatically; use Refresh to reconnect them.
 - Upgrade Apache Kafka client to 4.1.2 (required by the Schema Registry client's OAuth token provider)
+- The regular expression filter of the consumer compiles its pattern once instead of for every record and header
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
+- The regular expression filter of the consumer says what is wrong with a pattern that is not valid while it is typed, instead of failing when records arrive
 ### Removed
 ### Fixed
 - Deleting a consumer group that the broker rejects (for example, one that still has active members) now shows an error instead of appearing to succeed.
@@ -25,6 +27,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - Restarting the Confluent Cloud producer right after stopping it no longer lets the stopped run, still finishing its last produce request, stop the new run. While a producer is stopping, its button shows "Stopping..." and is disabled until that request finishes, so a second click no longer starts a new run.
 - Stopping the Confluent Cloud producer while it is waiting out rate limiting (429) now takes effect right away, instead of after the wait (up to about 3 minutes). A produce request already sent still finishes, so its record is reported.
 - Confluent Cloud tokens now refresh well before they expire, at a random point between 70% and 90% of the lifetime stated in each token, instead of a few seconds before. A slow refresh no longer leaves requests going out with an expired token.
+- The filter of the consumer only looked at the plain text of a key or value, which is not what the table shows for every type: a Base64 key was searched as `[B@...`, and the `$$$SchemaName$$$` property that the table shows for Avro records could not be found. The text that is shown is searched now, besides the text that was searched before
 
 ## 253.25910.2
 ### Fixed

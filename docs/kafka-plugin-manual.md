@@ -233,7 +233,10 @@ click ![Show Statistics](icons/app.expui.status.infoOutline.svg) to enable stati
       beginning** to get all records from the topic.
     * In the **Limit** list, select when to stop receiving data, for example, when a certain number of records is
       reached in the topic.
-    * Use **Filter** to filter records by substring in their keys, values, or headers.
+    * Use **Filter** to filter records by substring in their keys, values, or headers. Keys and values are searched in
+      the text that the table shows for them, so what you see is what you find. Select **Does not contain** to keep
+      the records that do not have the text, or **RegExp** to match with a regular expression, which must match the
+      whole key, value, or header. A regular expression that is not valid is marked as you type.
 7. Under Other, configure additional parameters:
     * In the **Partitions** box, enter a partition ID or a comma-separated list of IDs to get records from specific
       partitions only.

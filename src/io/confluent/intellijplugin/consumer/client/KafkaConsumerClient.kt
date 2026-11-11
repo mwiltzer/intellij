@@ -82,6 +82,8 @@ class KafkaConsumerClient(
 
         val taskRunId = curRunId.incrementAndGet()
         val limit = config.getLimit()
+        // Asked about every record, so it is built once for the run.
+        val passesFilter = config.getFilter().predicateFor(keyConfig, valueConfig)
 
         var needToReadTopicCount = limit.topicRecordsCount
         var needToReadTopicSize = limit.topicRecordsSize
@@ -154,7 +156,7 @@ class KafkaConsumerClient(
                         return@all false
                     }
 
-                    if (!config.getFilter().isRecordPassFilter(record))
+                    if (!passesFilter(record))
                         return@all true
 
                     val recordSize = record.serializedValueSize() + record.serializedKeySize()
