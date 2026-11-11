@@ -217,6 +217,51 @@ class ExpiringSingleFlightTest {
     }
 
     @Test
+    fun `should have nothing fresh to peek at before the first load`() {
+        val flight = flightOf { n -> "value-$n" }
+
+        assertNull(flight.peekFresh())
+        assertEquals(0, loads.get())
+    }
+
+    @Test
+    fun `should peek at the fresh value until it expires`() = runBlocking<Unit> {
+        val flight = flightOf(ttlMillis = 100) { n -> "value-$n" }
+        flight.get()
+
+        now.addAndGet(99)
+        assertEquals("value-1", flight.peekFresh())
+
+        now.addAndGet(1)
+        assertNull(flight.peekFresh())
+        // The value that has expired is still there for peek, and no peek loads.
+        assertEquals("value-1", flight.peek())
+        assertEquals(1, loads.get())
+    }
+
+    @Test
+    fun `should have nothing fresh to peek at after it was invalidated`() = runBlocking<Unit> {
+        val flight = flightOf { n -> "value-$n" }
+        flight.get()
+
+        flight.invalidate()
+
+        assertNull(flight.peekFresh())
+    }
+
+    @Test
+    fun `should peek at the new fresh value once it was loaded again`() = runBlocking<Unit> {
+        val flight = flightOf(ttlMillis = 100) { n -> "value-$n" }
+        flight.get()
+        now.addAndGet(100)
+        assertNull(flight.peekFresh())
+
+        flight.get()
+
+        assertEquals("value-2", flight.peekFresh())
+    }
+
+    @Test
     fun `should load again on refresh although the value has not expired`() = runBlocking<Unit> {
         val flight = flightOf { n -> "value-$n" }
         assertEquals("value-1", flight.get())
@@ -324,5 +369,52 @@ class ExpiringSingleFlightTest {
         assertEquals("value-1", withTimeout(5_000) { beforeChange.await() })
         assertEquals("value-2", withTimeout(5_000) { afterChange.await() })
         assertEquals("value-2", flight.peek())
+    }
+
+    private fun flightWithTtl(ttl: () -> Long) =
+        ExpiringSingleFlight(scope, ttl, now::get) { "value-${loads.incrementAndGet()}" }
+
+    @Test
+    fun `should keep the value for as long as the time to live says when the value is read`() = runBlocking<Unit> {
+        var ttl = 100L
+        val flight = flightWithTtl { ttl }
+        flight.get()
+        now.addAndGet(150)
+        assertNull(flight.peekFresh())
+
+        // The value is no older, but it is allowed to be.
+        ttl = 200
+        assertEquals("value-1", flight.peekFresh())
+        assertEquals("value-1", flight.get())
+        assertEquals(1, loads.get())
+    }
+
+    @Test
+    fun `should load again when the time to live got shorter than the age of the value`() = runBlocking<Unit> {
+        var ttl = 1_000L
+        val flight = flightWithTtl { ttl }
+        flight.get()
+        now.addAndGet(150)
+        assertEquals("value-1", flight.get())
+
+        ttl = 100
+
+        assertNull(flight.peekFresh())
+        assertEquals("value-2", flight.get())
+        assertEquals(2, loads.get())
+    }
+
+    @Test
+    fun `should take the time to live of the moment for a value that was loaded before it changed`() = runBlocking<Unit> {
+        var ttl = 100L
+        val flight = flightWithTtl { ttl }
+        flight.get()
+        ttl = 1_000
+
+        now.addAndGet(999)
+        assertEquals("value-1", flight.get())
+
+        now.addAndGet(1)
+        assertEquals("value-2", flight.get())
     }
 }

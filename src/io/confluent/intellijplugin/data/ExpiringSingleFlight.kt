@@ -12,13 +12,23 @@ import kotlinx.coroutines.async
  * request replaced it) does not cancel the load for the others. A failed load is shared by the callers waiting
  * for it, but not remembered: the next call tries again. After [ttlMillis] the value is loaded again by the next
  * [get], but until then [peek] still hands out the old one.
+ *
+ * [ttlMillis] is asked every time the age of the value is looked at, so a value is kept for as long as it says now,
+ * not for as long as it said when the value was loaded.
  */
 internal class ExpiringSingleFlight<T : Any>(
     private val scope: CoroutineScope,
-    private val ttlMillis: Long,
+    private val ttlMillis: () -> Long,
     private val clock: () -> Long = System::currentTimeMillis,
     private val load: suspend () -> T
 ) {
+    constructor(
+        scope: CoroutineScope,
+        ttlMillis: Long,
+        clock: () -> Long = System::currentTimeMillis,
+        load: suspend () -> T
+    ) : this(scope, { ttlMillis }, clock, load)
+
     private class Cached<T>(val value: T, val loadedAt: Long)
 
     private val lock = Any()
@@ -28,7 +38,7 @@ internal class ExpiringSingleFlight<T : Any>(
     private var inFlight: Deferred<T>? = null
     private var generation = 0L
 
-    private fun Cached<T>.isFresh() = clock() - loadedAt < ttlMillis
+    private fun Cached<T>.isFresh() = clock() - loadedAt < ttlMillis()
 
     suspend fun get(): T {
         val flight = synchronized(lock) {
@@ -64,6 +74,12 @@ internal class ExpiringSingleFlight<T : Any>(
      * Never loads: it lets a caller show something right away while [get] brings the value up to date.
      */
     fun peek(): T? = synchronized(lock) { cached?.value }
+
+    /**
+     * The value that was loaded last if it has not expired yet, else `null`. Never loads: it is what [get] would hand
+     * out without loading, for a caller that has a cheaper way than [get] when the value has to be loaded.
+     */
+    fun peekFresh(): T? = synchronized(lock) { cached?.takeIf { it.isFresh() }?.value }
 
     private fun startLoad(): Deferred<T> {
         val startedIn = generation

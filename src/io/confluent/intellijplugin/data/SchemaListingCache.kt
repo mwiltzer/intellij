@@ -46,6 +46,22 @@ internal class SchemaListingCache(
      */
     suspend fun has(name: String): Boolean = knownToHave(name) ?: (name in listingFor(prefix = name, refresh = false))
 
+    /**
+     * The names of the schemas that start with [prefix], as current as one cheap request tells: the registry is asked for
+     * those schemas only, also when all the schemas were listed lately. That listing can be minutes old, and the schema
+     * of a topic that was registered since is what an editor looks for. What the registry answers is kept for a minute,
+     * see [PrefixListings].
+     *
+     * A registry that can not list by prefix has only the listing of all schemas to tell, if one was made lately.
+     * `null` if there is none, or [prefix] is empty, which asks for all schemas: listing all of them is the only way.
+     */
+    suspend fun namesStartingWith(prefix: String): List<String>? {
+        if (prefix.isEmpty()) return null
+        val listing = prefixes.get(prefix) ?: all.peekFresh() ?: return null
+        // A listing for a shorter prefix, or of all schemas, has others as well.
+        return listing.names.filter { it.startsWith(prefix) }
+    }
+
     /** Forgets everything that was listed, e.g. after the schemas of the registry were changed. */
     fun clear() {
         all.invalidate()

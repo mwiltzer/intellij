@@ -17,6 +17,22 @@ interface SchemaFormats {
     suspend fun getSchemaNamesForEditor(): List<String>?
 
     /**
+     * The names of the schemas that suit the [topic]: the ones that start with its name, such as `orders-value` and
+     * `orders-key` for the topic `orders`. A registry that can list by prefix gives them in a fraction of the time
+     * [getSchemaNamesForEditor] needs for all schemas, which takes seconds in a big registry. And it gives the current
+     * ones, so a schema that was registered after all the schemas were listed is among them.
+     * `null` if there is no faster way, or it failed: [getSchemaNamesForEditor] is the way then.
+     */
+    suspend fun getSchemaNamesForTopic(topic: String): List<String>? = null
+
+    /**
+     * Names that have the schemas of the [topic] among them, as fast as the registry allows: those of
+     * [getSchemaNamesForTopic], else all of them. Empty if the registry could not be asked.
+     */
+    suspend fun getSchemaNamesToFindTopicSchemas(topic: String): List<String> =
+        getSchemaNamesForTopic(topic) ?: getSchemaNamesForEditor().orEmpty()
+
+    /**
      * The names that were listed before, also when they are old; `null` if there are none.
      * Never asks the registry: it is meant for showing something right away while [getSchemaNamesForEditor] runs.
      */

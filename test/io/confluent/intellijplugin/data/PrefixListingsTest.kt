@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -289,5 +290,69 @@ class PrefixListingsTest {
 
         assertNull(listings.get("orders"))
         assertEquals(listOf("orders"), asked)
+    }
+
+    @Test
+    fun `should not know that the registry lists by prefix before it was asked`() {
+        assertFalse(listingsOf().canListByPrefix)
+    }
+
+    @Test
+    fun `should know that the registry lists by prefix once it did`() = runBlocking<Unit> {
+        val listings = listingsOf()
+
+        listings.get("orders")
+
+        assertTrue(listings.canListByPrefix)
+    }
+
+    @Test
+    fun `should know that the registry lists by prefix once a refresh did`() = runBlocking<Unit> {
+        val listings = listingsOf()
+
+        listings.get("orders", refresh = true)
+
+        assertTrue(listings.canListByPrefix)
+    }
+
+    @Test
+    fun `should still know that the registry lists by prefix after it was cleared`() = runBlocking<Unit> {
+        val listings = listingsOf()
+        listings.get("orders")
+
+        listings.clear()
+
+        assertTrue(listings.canListByPrefix)
+    }
+
+    @Test
+    fun `should not know that the registry lists by prefix when it can not`() = runBlocking<Unit> {
+        val listings = listingsOf { null }
+
+        listings.get("orders")
+
+        assertFalse(listings.canListByPrefix)
+    }
+
+    @Test
+    fun `should not know that the registry lists by prefix when it failed`() = runBlocking<Unit> {
+        val listings = listingsOf { error("registry unavailable") }
+
+        assertThrows<IllegalStateException> { listings.get("orders") }
+
+        assertFalse(listings.canListByPrefix)
+    }
+
+    @Test
+    fun `should not know that the registry lists by prefix once it turned out that it can not`() = runBlocking<Unit> {
+        var supported = true
+        val listings = listingsOf { if (supported) listingFor(it) else null }
+        listings.get("orders")
+        assertTrue(listings.canListByPrefix)
+
+        supported = false
+        listings.get("payments")
+
+        assertFalse(listings.canListByPrefix)
     }
 }

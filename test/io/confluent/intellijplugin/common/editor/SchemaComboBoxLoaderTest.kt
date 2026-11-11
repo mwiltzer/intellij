@@ -6,6 +6,8 @@ import com.intellij.testFramework.junit5.TestApplication
 import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.data.SchemaFormats
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
+import io.confluent.intellijplugin.util.RecordingLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.SwingUtilities
 
@@ -44,6 +47,18 @@ class SchemaComboBoxLoaderTest {
         @Volatile
         var cachedNames: List<String>? = null
         val nameRequests = AtomicInteger()
+
+        // What a registry that can list by prefix says for a topic; no entry is a registry that can not.
+        @Volatile
+        var topicNames: Map<String, List<String>> = emptyMap()
+
+        @Volatile
+        var topicGate: CompletableDeferred<Unit>? = null
+
+        @Volatile
+        var topicFailure: Exception? = null
+        val topicRequests = ConcurrentLinkedQueue<String>()
+        val topicCancelled = AtomicInteger()
         val formatRequests = ConcurrentLinkedQueue<String>()
         val resolveRequests = ConcurrentLinkedQueue<Pair<List<String>, List<String>>>()
         private val known = ConcurrentHashMap<String, KafkaRegistryFormat>()
@@ -52,6 +67,18 @@ class SchemaComboBoxLoaderTest {
             nameRequests.incrementAndGet()
             listingGate?.await()
             return names
+        }
+
+        override suspend fun getSchemaNamesForTopic(topic: String): List<String>? {
+            topicRequests += topic
+            try {
+                topicGate?.await()
+            } catch (e: CancellationException) {
+                topicCancelled.incrementAndGet()
+                throw e
+            }
+            topicFailure?.let { throw it }
+            return topicNames[topic]
         }
 
         override fun getCachedSchemaNames() = cachedNames
@@ -142,6 +169,16 @@ class SchemaComboBoxLoaderTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (onEdt(condition)) return
+            Thread.sleep(10)
+        }
+        fail<Unit>("Timed out waiting for $what")
+    }
+
+    // For when the EDT is held up on purpose, and for conditions that do not need it.
+    private fun awaitOffEdt(what: String, timeoutMs: Long = 5_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
             Thread.sleep(10)
         }
         fail<Unit>("Timed out waiting for $what")
@@ -924,6 +961,475 @@ class SchemaComboBoxLoaderTest {
 
             fixture.awaitNames("orders-value", "payments-value", "audit-value")
             assertEquals("payments-value", fixture.selectedName())
+        }
+    }
+
+    @Nested
+    inner class `the schema of the topic ahead of the others` {
+
+        private val everyone = listOf("orders-value", "orders-key", "audit-value", "payments-value")
+
+        // The registry lists all the schemas only when the gate opens, and the schemas of the topic at once.
+        private fun gatedSource(): FakeSource =
+            sourceOf("audit-value", "orders-key", "orders-value", "payments-value").also {
+                it.topicNames = mapOf("orders" to listOf("orders-key", "orders-value"))
+                it.listingGate = CompletableDeferred()
+            }
+
+        private fun FakeSource.openListing() = listingGate!!.complete(Unit)
+
+        @Test
+        fun `should show the schema of the topic while the other schemas are still listed`() {
+            topic = "orders"
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-value", "orders-key")
+            assertEquals("orders-value", fixture.selectedName())
+            assertFalse(fixture.loader.isListing)
+            assertEquals(listOf("orders"), source.topicRequests.toList())
+        }
+
+        @Test
+        fun `should show the key schema of the topic for a key`() {
+            topic = "orders"
+            val fixture = fixtureFor(gatedSource(), isKey = true)
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-key", "orders-value")
+            assertEquals("orders-key", fixture.selectedName())
+        }
+
+        @Test
+        fun `should ask for all the schemas at the same time`() {
+            topic = "orders"
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            // Listing them does not wait for the lookup of the schemas of the topic.
+            fixture.awaitNames("orders-value", "orders-key")
+            assertEquals(1, source.nameRequests.get())
+        }
+
+        @Test
+        fun `should replace them with all the schemas when these are listed`() {
+            topic = "orders"
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            fixture.awaitNames("orders-value", "orders-key")
+
+            source.openListing()
+
+            fixture.awaitNames(*everyone.toTypedArray())
+            assertEquals("orders-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should look up the format of the schema of the topic before the other schemas are listed`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.resolveGate.complete(Unit)
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            eventually("the format of the schema of the topic") {
+                fixture.formatNow("orders-value") == KafkaRegistryFormat.PROTOBUF
+            }
+            assertEquals(listOf("orders-value"), source.urgentNames())
+        }
+
+        @Test
+        fun `should keep a schema that was chosen although the schemas of the topic lack it`() {
+            topic = "orders"
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+            // What an editor does when it restores its settings.
+            onEdt { KafkaEditorUtils.selectSchemaByName(fixture.combo, "audit-value", KafkaRegistryFormat.AVRO) }
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-value", "orders-key", "audit-value")
+            assertEquals("audit-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should go on asking for the schemas of the topic when all the schemas are shown`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicGate = CompletableDeferred()
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            awaitOffEdt("the lookup of the schemas of the topic") { source.topicRequests.size == 1 }
+
+            source.openListing()
+
+            fixture.awaitNames(*everyone.toTypedArray())
+            Thread.sleep(100)
+            // The schemas that were listed may be minutes old, the answer to the lookup is what is current.
+            assertEquals(0, source.topicCancelled.get())
+        }
+
+        @Test
+        fun `should add a schema of the topic that was registered after all the schemas were listed`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicNames = mapOf("orders" to listOf("orders-key", "orders-value", "orders-new-value"))
+            val gate = CompletableDeferred<Unit>().also { source.topicGate = it }
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            source.openListing()
+            fixture.awaitNames(*everyone.toTypedArray())
+
+            gate.complete(Unit)
+
+            fixture.awaitNames("orders-value", "orders-key", "orders-new-value", "audit-value", "payments-value")
+            assertEquals("orders-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should keep a schema of the topic that the listing of all the schemas lacks`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicNames = mapOf("orders" to listOf("orders-key", "orders-value", "orders-new-value"))
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            fixture.awaitNames("orders-value", "orders-key", "orders-new-value")
+
+            // The registry lists all of its schemas, which were listed before the new one was registered.
+            source.openListing()
+
+            fixture.awaitNames("orders-value", "orders-key", "orders-new-value", "audit-value", "payments-value")
+        }
+
+        @Test
+        fun `should keep the schema that was chosen when all the schemas are listed`() {
+            topic = "orders"
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            fixture.awaitNames("orders-value", "orders-key")
+            fixture.select("orders-key")
+
+            source.openListing()
+
+            fixture.awaitNames(*everyone.toTypedArray())
+            assertEquals("orders-key", fixture.selectedName())
+        }
+
+        @Test
+        fun `should ask for the schemas of the topic also when names were listed before`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.cachedNames = listOf("audit-value", "orders-value")
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            // What the names that were listed before lack is what the registry has of the topic now.
+            fixture.awaitNames("orders-value", "orders-key", "audit-value")
+            assertEquals(listOf("orders"), source.topicRequests.toList())
+        }
+
+        @Test
+        fun `should select the schema of the topic that the names listed before lack`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.cachedNames = listOf("audit-value", "payments-value")
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-value", "orders-key", "audit-value", "payments-value")
+            assertEquals("orders-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should keep the schema that was chosen when the schemas of the topic are added to names listed before`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.cachedNames = listOf("audit-value", "payments-value")
+            val gate = CompletableDeferred<Unit>().also { source.topicGate = it }
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            fixture.awaitNames("audit-value", "payments-value")
+            fixture.select("payments-value")
+
+            gate.complete(Unit)
+
+            fixture.awaitNames("orders-value", "orders-key", "audit-value", "payments-value")
+            assertEquals("payments-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should leave names listed before as they are when the registry has no schema of the topic that they lack`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.cachedNames = listOf("audit-value", "orders-key", "orders-value", "payments-value")
+            val logger = RecordingLogger()
+            val fixture = fixtureFor(source, logger = logger)
+
+            fixture.loader.load()
+            awaitOffEdt("the lookup of the schemas of the topic") { source.topicRequests.size == 1 }
+            Thread.sleep(150)
+
+            // Only the names that were listed before were shown, the answer for the topic has nothing to add.
+            assertEquals(1, logger.lines.count { "combo box shows" in it }, logger.lines.toString())
+            assertEquals(everyone, fixture.names())
+        }
+
+        @Test
+        fun `should not ask for the schemas of a topic that is not known`() {
+            topic = null
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+            Thread.sleep(150)
+            source.openListing()
+
+            fixture.awaitNames("audit-value", "orders-key", "orders-value", "payments-value")
+            assertTrue(source.topicRequests.isEmpty())
+        }
+
+        @Test
+        fun `should not ask for the schemas of a topic without a name`() {
+            topic = ""
+            val source = gatedSource()
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+            Thread.sleep(150)
+            source.openListing()
+
+            fixture.awaitNames("audit-value", "orders-key", "orders-value", "payments-value")
+            assertTrue(source.topicRequests.isEmpty())
+        }
+
+        @Test
+        fun `should show nothing ahead of the others when the topic has no schema among them`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicNames = mapOf("orders" to listOf("orders2-value", "orders-archive-value"))
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+            eventually("the lookup of the schemas of the topic") { source.topicRequests.size == 1 }
+            Thread.sleep(150)
+
+            // The combo box would select one of them for no reason.
+            assertEquals(emptyList<String>(), fixture.names())
+            assertTrue(fixture.loader.isListing)
+        }
+
+        @Test
+        fun `should wait for all the schemas when the registry can not list by prefix`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicNames = emptyMap()
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+            eventually("the lookup of the schemas of the topic") { source.topicRequests.size == 1 }
+            Thread.sleep(150)
+            assertEquals(emptyList<String>(), fixture.names())
+
+            source.openListing()
+
+            fixture.awaitNames(*everyone.toTypedArray())
+        }
+
+        @Test
+        fun `should list all the schemas when the lookup of the schemas of the topic fails`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicFailure = IllegalStateException("registry unavailable")
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            eventually("the lookup of the schemas of the topic") { source.topicRequests.size == 1 }
+
+            source.openListing()
+
+            fixture.awaitNames(*everyone.toTypedArray())
+            assertEquals("orders-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should not show the schemas of a topic that was left`() {
+            topic = "orders"
+            val source = gatedSource()
+            source.topicNames = mapOf("orders" to listOf("orders-value"), "payments" to listOf("payments-value"))
+            val gate = CompletableDeferred<Unit>().also { source.topicGate = it }
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            eventually("the lookup of the schemas of the first topic") { source.topicRequests.size == 1 }
+
+            topic = "payments"
+            fixture.loader.load(topicChanged = true)
+            eventually("the lookup of the schemas of the second topic") { source.topicRequests.size == 2 }
+            gate.complete(Unit)
+
+            fixture.awaitNames("payments-value")
+            Thread.sleep(150)
+            assertEquals(listOf("payments-value"), fixture.names())
+            assertEquals("payments-value", fixture.selectedName())
+        }
+
+        @Test
+        fun `should not let the schemas of the topic go over all the schemas that were shown first`() {
+            topic = "orders"
+            val source = gatedSource()
+            val topicGate = CompletableDeferred<Unit>().also { source.topicGate = it }
+            val fixture = fixtureFor(source)
+            // The EDT is busy, so the list of all the schemas waits for it, and the schemas of the topic queue behind it.
+            val edtBusy = CountDownLatch(1)
+            SwingUtilities.invokeLater { edtBusy.await() }
+
+            fixture.loader.load()
+            awaitOffEdt("the lookup of the schemas of the topic") { source.topicRequests.size == 1 }
+            source.openListing()
+            awaitOffEdt("the request for all the schemas") { source.nameRequests.get() == 1 }
+            Thread.sleep(150)
+            topicGate.complete(Unit)
+            Thread.sleep(150)
+            edtBusy.countDown()
+
+            fixture.awaitNames(*everyone.toTypedArray())
+            Thread.sleep(200)
+            assertEquals(everyone, fixture.names())
+        }
+    }
+
+    @Nested
+    inner class `what the log tells` {
+
+        private val logger = RecordingLogger()
+
+        private val everyone = listOf("audit-value", "orders-key", "orders-value", "payments-value")
+
+        private fun awaitLine(line: String) =
+            awaitOffEdt("the line '$line'") { line in logger.lines }
+
+        private fun awaitLineLike(regex: String) =
+            awaitOffEdt("a line like '$regex'") { logger.lines.any { Regex(regex).matches(it) } }
+
+        @Test
+        fun `should tell that the schema of the topic is selected`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf(*everyone.toTypedArray()), logger = logger)
+
+            fixture.loader.load()
+
+            awaitLine("debug: The value combo box shows 4 schemas for topic 'orders' and selects 'orders-value', the schema of the topic")
+        }
+
+        @Test
+        fun `should tell for which combo box the schema of the topic is selected`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf(*everyone.toTypedArray()), isKey = true, logger = logger)
+
+            fixture.loader.load()
+
+            awaitLine("debug: The key combo box shows 4 schemas for topic 'orders' and selects 'orders-key', the schema of the topic")
+        }
+
+        @Test
+        fun `should tell that there is no schema of the topic among them and which one is selected`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf("audit-value", "payments-value"), logger = logger)
+
+            fixture.loader.load()
+
+            awaitLine("debug: The value combo box shows 2 schemas for topic 'orders' and has no schema of the topic among them, and 'audit-value' is selected")
+        }
+
+        @Test
+        fun `should tell that there is no schema of the topic among them and none is selected`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf(), logger = logger)
+
+            fixture.loader.load()
+
+            awaitLine("debug: The value combo box shows 0 schemas for topic 'orders' and has no schema of the topic among them, and none is selected")
+        }
+
+        @Test
+        fun `should tell that the schema that was chosen is kept`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf(*everyone.toTypedArray()), logger = logger)
+            fixture.loader.load()
+            fixture.awaitNames("orders-value", "orders-key", "audit-value", "payments-value")
+            fixture.select("payments-value")
+
+            fixture.loader.reload()
+
+            awaitLine("debug: The value combo box shows 4 schemas for topic 'orders' and keeps 'payments-value', which was chosen")
+        }
+
+        @Test
+        fun `should tell that the schema that was chosen is not among them, so that none is selected`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf("audit-value", "orders-value"), logger = logger)
+            // What an editor does when it restores its settings.
+            onEdt { KafkaEditorUtils.selectSchemaByName(fixture.combo, "gone-value", KafkaRegistryFormat.AVRO) }
+
+            fixture.loader.load()
+
+            awaitLine("debug: The value combo box shows 2 schemas for topic 'orders' and has no 'gone-value', which was chosen, so none is selected")
+        }
+
+        @Test
+        fun `should tell how long showing the schemas took and how much of it the UI thread kept waiting`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf(*everyone.toTypedArray()), logger = logger)
+
+            fixture.loader.load()
+
+            awaitLineLike("debug: Showing 4 schemas in the value combo box took \\d+ ms, \\d+ ms of it waiting for the UI thread")
+        }
+
+        @Test
+        fun `should tell that the schemas shown first were listed before`() {
+            topic = "orders"
+            val source = sourceOf(*everyone.toTypedArray()).also { it.cachedNames = listOf("audit-value", "orders-value") }
+            val fixture = fixtureFor(source, logger = logger)
+
+            fixture.loader.load()
+
+            awaitLineLike("debug: Showing 2 schemas that were listed before in the value combo box took \\d+ ms, \\d+ ms of it waiting for the UI thread")
+        }
+
+        @Test
+        fun `should tell how long showing the schemas of the topic took`() {
+            topic = "orders"
+            val source = sourceOf(*everyone.toTypedArray()).also {
+                it.topicNames = mapOf("orders" to listOf("orders-key", "orders-value"))
+            }
+            val fixture = fixtureFor(source, logger = logger)
+
+            fixture.loader.load()
+
+            awaitLineLike("debug: Showing the 2 schemas of topic 'orders' in the value combo box took \\d+ ms, \\d+ ms of it waiting for the UI thread")
+        }
+
+        @Test
+        fun `should tell how long it took to ask the registry`() {
+            topic = "orders"
+            val source = sourceOf(*everyone.toTypedArray()).also {
+                it.topicNames = mapOf("orders" to listOf("orders-key", "orders-value"))
+            }
+            val fixture = fixtureFor(source, logger = logger)
+
+            fixture.loader.load()
+
+            awaitLineLike("debug: Getting the schema names for the value combo box took \\d+ ms")
+            awaitLineLike("debug: Getting the schema names of topic 'orders' for the value combo box took \\d+ ms")
         }
     }
 

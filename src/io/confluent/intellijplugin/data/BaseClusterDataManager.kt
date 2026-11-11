@@ -73,7 +73,7 @@ abstract class BaseClusterDataManager(
     // the tool window invalidate it sooner than it expires, and what is older is still shown by the editors while the
     // registry is asked again, see getCachedSchemaNames.
     private val schemaListing: ExpiringSingleFlight<SchemaListing> by lazy {
-        ExpiringSingleFlight(schemaScope, SCHEMA_NAMES_TTL_MS) {
+        schemaNamesFlight(schemaScope, prefixListings) {
             thisLogger().timed("Listing the schema names of connection $connectionId") {
                 SchemaListing(listSchemasNames().sortedBy { it.name.lowercase() })
             }
@@ -363,8 +363,9 @@ abstract class BaseClusterDataManager(
      * Names of the schemas the editors can reference, without their formats.
      *
      * The editors, and their key and value fields, ask for the names all at the same time, so they share one
-     * registry request, and what it found is reused for [SCHEMA_NAMES_TTL_MS]. A listing of a big registry takes
-     * seconds, so what is older is still there for the editors to show, see [getCachedSchemaNames].
+     * registry request, and what it found is reused for [SCHEMA_NAMES_TTL_MS] or [SCHEMA_NAMES_SHORT_TTL_MS]. A listing
+     * of a big registry takes seconds, so what is older is still there for the editors to show, see
+     * [getCachedSchemaNames]; the schemas that were registered since are the ones [getSchemaNamesForTopic] finds.
      * `null` if the registry could not be asked.
      */
     override suspend fun getSchemaNamesForEditor(): List<String>? = try {
@@ -379,6 +380,18 @@ abstract class BaseClusterDataManager(
     }
 
     override fun getCachedSchemaNames(): List<String>? = schemaListing.peek()?.names
+
+    override suspend fun getSchemaNamesForTopic(topic: String): List<String>? = try {
+        listings.namesStartingWith(topic)
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        // The listing of all schemas is what the editors ask for next, and tells what is wrong with the registry.
+        thisLogger().warn("Failed to list the schema names of topic '$topic' for connection $connectionId", e)
+        null
+    }
 
     override fun getPinnedSchemaNames(): Set<String> =
         KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId()).schemasPined.toSet()
@@ -647,8 +660,5 @@ abstract class BaseClusterDataManager(
     private companion object {
         // The topics of a cluster change rarely. A refresh of the schemas lists them again.
         const val VISIBLE_TOPICS_TTL_MS = 5 * 60_000L
-
-        // How long the names of all the schemas are kept. The editors show older ones while the registry is asked again.
-        const val SCHEMA_NAMES_TTL_MS = 60_000L
     }
 }

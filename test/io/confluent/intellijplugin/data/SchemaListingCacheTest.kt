@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 
@@ -47,6 +48,122 @@ class SchemaListingCacheTest {
             if (prefixListingSupported) listedFor(prefix) else null
         }
         return SchemaListingCache(all, prefixes)
+    }
+
+    @Nested
+    inner class NamesStartingWith {
+
+        @Test
+        fun `should ask the registry for the schemas that start with the prefix`() = runBlocking<Unit> {
+            val cache = cacheOf()
+
+            val names = cache.namesStartingWith("orders")
+
+            assertEquals(listOf("orders-key", "orders-value", "orders2-value"), names)
+            assertEquals(listOf("orders"), prefixesAsked)
+            assertTrue(allAsked.isEmpty())
+        }
+
+        @Test
+        fun `should ask once for a prefix that is asked for again`() = runBlocking<Unit> {
+            val cache = cacheOf()
+
+            cache.namesStartingWith("orders")
+            cache.namesStartingWith("orders")
+
+            assertEquals(listOf("orders"), prefixesAsked)
+        }
+
+        @Test
+        fun `should ask the registry also when all the schemas were listed lately`() = runBlocking<Unit> {
+            val cache = cacheOf()
+            cache.listingFor(prefix = null, refresh = false)
+
+            val names = cache.namesStartingWith("orders")
+
+            assertEquals(listOf("orders-key", "orders-value", "orders2-value"), names)
+            assertEquals(listOf("orders"), prefixesAsked)
+            assertEquals(1, allAsked.size)
+        }
+
+        @Test
+        fun `should find a schema that was registered after all the schemas were listed`() = runBlocking<Unit> {
+            val cache = cacheOf()
+            cache.listingFor(prefix = null, refresh = false)
+            registry += "orders-new-value"
+            now.addAndGet(500)
+
+            val names = cache.namesStartingWith("orders")
+
+            assertTrue("orders-new-value" in names!!, "found $names")
+        }
+
+        @Test
+        fun `should take them from the listing of all schemas that was made lately, when the registry can not list by prefix`() =
+            runBlocking<Unit> {
+                val cache = cacheOf(prefixListingSupported = false)
+                cache.listingFor(prefix = null, refresh = false)
+
+                val names = cache.namesStartingWith("orders")
+
+                assertEquals(listOf("orders-key", "orders-value", "orders2-value"), names)
+                assertEquals(1, allAsked.size)
+            }
+
+        @Test
+        fun `should give nothing when the registry can not list by prefix and the listing of all schemas is too old`() =
+            runBlocking<Unit> {
+                val cache = cacheOf(prefixListingSupported = false)
+                cache.listingFor(prefix = null, refresh = false)
+                now.addAndGet(1_000)
+
+                assertNull(cache.namesStartingWith("orders"))
+                assertEquals(1, allAsked.size)
+            }
+
+        @Test
+        fun `should leave out what a listing for a shorter prefix has more`() = runBlocking<Unit> {
+            val cache = cacheOf()
+            cache.listingFor(prefix = "ord", refresh = false)
+
+            val names = cache.namesStartingWith("orders")
+
+            assertEquals(listOf("orders-key", "orders-value", "orders2-value"), names)
+            assertEquals(listOf("ord"), prefixesAsked)
+        }
+
+        @Test
+        fun `should find no schema for a prefix that none starts with`() = runBlocking<Unit> {
+            val cache = cacheOf()
+
+            assertEquals(emptyList<String>(), cache.namesStartingWith("nothing"))
+        }
+
+        @Test
+        fun `should give nothing for a registry that can not list by prefix`() = runBlocking<Unit> {
+            val cache = cacheOf(prefixListingSupported = false)
+
+            assertNull(cache.namesStartingWith("orders"))
+            // Listing all the schemas is what the caller does then, not this.
+            assertTrue(allAsked.isEmpty())
+        }
+
+        @Test
+        fun `should give nothing for an empty prefix, which asks for all schemas`() = runBlocking<Unit> {
+            val cache = cacheOf()
+
+            assertNull(cache.namesStartingWith(""))
+
+            assertTrue(prefixesAsked.isEmpty())
+            assertTrue(allAsked.isEmpty())
+        }
+
+        @Test
+        fun `should let a failure of the registry through`() = runBlocking<Unit> {
+            val cache = cacheOf(prefixFailure = IllegalStateException("registry unavailable"))
+
+            assertThrows<IllegalStateException> { cache.namesStartingWith("orders") }
+        }
     }
 
     @Nested

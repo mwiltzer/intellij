@@ -35,6 +35,16 @@ internal class PrefixListings(
     @Volatile
     private var unsupported = false
 
+    @Volatile
+    private var answered = false
+
+    /**
+     * Whether the registry lists by prefix: it did, and it was not told to be unable to later. That is what a caller that
+     * relies on prefix listings can count on, while a registry that was not asked yet is not known to be able to.
+     * It does not change when what was listed is cleared.
+     */
+    val canListByPrefix: Boolean get() = answered && !unsupported
+
     /** The listings that were loaded lately, for whatever prefix. Never asks the registry. */
     fun cached(): List<SchemaListing> {
         val peeked = synchronized(lock) { flights.values.mapNotNull { it.peek() } }
@@ -56,7 +66,7 @@ internal class PrefixListings(
             }
         }
         return try {
-            if (refresh) flight.refresh() else flight.get()
+            (if (refresh) flight.refresh() else flight.get()).also { answered = true }
         } catch (_: Unsupported) {
             unsupported = true
             null

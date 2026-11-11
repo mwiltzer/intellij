@@ -202,7 +202,13 @@ favorite: right-click a topic and select **Add to Favorites**.
 
    The schemas that matter come first in the list: the schema of the topic (`<topic>-value`, or `<topic>-key` for a
    key), the other schema of the topic, other schemas whose names start with the name of the topic, your favorites, all
-   the others in alphabetical order, and the internal schemas (names that start with an underscore) last.
+   the others in alphabetical order, and the internal schemas (names that start with an underscore) last. A Confluent
+   Schema Registry that you reach through a Kafka connection is asked for the schemas that start with the name of the
+   topic every time an editor is opened. That takes a fraction of a second, so when nothing was listed yet, for example in
+   the first editor that you open, the schema of the topic is selected and its format looked up while the list of all
+   schemas is still loading. When the names of an earlier listing are shown, a schema that was registered since is added
+   to them and selected. The names of all schemas are kept for five minutes with such a Schema Registry, and for a
+   minute otherwise; refreshing the **Schema Registry** section lists them again.
 
 7. Under **Headers**, provide any custom headers. If you have them in JSON or CSV format, you can paste them into this
    section.
@@ -404,9 +410,9 @@ A line below the table tells how many schemas are hidden, and when all of them a
 them. Favorite schemas are never hidden. A schema that is registered before its topic exists stays hidden until the
 topic exists or you click **Show Schemas of Other Topics**.
 
-The section keeps the list of schemas it got from the Schema Registry for a minute. Filtering, changing the limit,
-marking favorites, and the switches use that list, so they respond right away. To ask the Schema Registry again,
-refresh the section.
+The section keeps the list of schemas it got from the Schema Registry, for up to five minutes if the registry can list by
+prefix, else for one. Filtering, changing the limit, marking favorites, and the switches use that list, so they respond
+right away. To ask the Schema Registry again, refresh the section.
 
 ### Compare schema versions
 

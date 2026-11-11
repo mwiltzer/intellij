@@ -191,7 +191,7 @@ object KafkaEditorUtils {
                     val schemaType = detectSchemaFieldType(
                         topic = topic,
                         isKey = isKey,
-                        listSchemaNames = { dataManager.getSchemaNamesForEditor().orEmpty() },
+                        listSchemaNames = dataManager::getSchemaNamesToFindTopicSchemas,
                         getSchemaFormat = dataManager::getSchemaFormat
                     ) ?: typeWithoutSchema ?: return@launch
                     runInEdt {
@@ -338,8 +338,8 @@ object KafkaEditorUtils {
     /**
      * Field type to suggest for the [topic]: the schema registry one when the registry has a schema for the topic.
      *
-     * Costs the names of the schemas, which the editors list once for all of them, and the details of at most one of
-     * them, so it stays cheap on big registries.
+     * Costs the names of the schemas that start with the topic's name, or of all if the registry can not list those,
+     * and the details of at most one of them, so it stays cheap on big registries.
      */
     internal suspend fun detectSchemaFieldType(
         topic: String?,
