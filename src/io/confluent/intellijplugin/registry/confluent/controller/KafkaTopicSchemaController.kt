@@ -1,5 +1,8 @@
 package io.confluent.intellijplugin.registry.confluent.controller
 
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.SimpleTextAttributes
@@ -12,6 +15,14 @@ import io.confluent.intellijplugin.core.monitoring.toolwindow.DetailsMonitoringC
 import io.confluent.intellijplugin.data.BaseClusterDataManager
 import io.confluent.intellijplugin.registry.KafkaRegistryAddSchemaDialog
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import javax.swing.JComponent
 
@@ -21,6 +32,10 @@ class KafkaTopicSchemaController(
     private val viewType: TopicSchemaViewType
 ) : DetailsMonitoringController<String> {
     private var topicName: String? = null
+
+    // Asks the registry if the schema exists when that is not known, which may take a moment.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var existenceCheck: Job? = null
 
     private val schemaController = KafkaSchemaController(project, dataManager).also {
         Disposer.register(this, it)
@@ -46,6 +61,7 @@ class KafkaTopicSchemaController(
 
     override fun dispose() {
         dataManager.schemaRegistryModel?.removeListener(listener)
+        scope.cancel()
     }
 
     fun init() {
@@ -59,6 +75,8 @@ class KafkaTopicSchemaController(
     override fun setDetailsId(id: String) {
         topicName = id
         val schemaName = id + viewType.suffix
+        existenceCheck?.cancel()
+        existenceCheck = null
 
         // Always show loading first, then determine final state via listener
         setLoadingState()
@@ -68,14 +86,40 @@ class KafkaTopicSchemaController(
 
         if (isInitialized) {
             // Schemas already loaded, update immediately
-            if (dataManager.schemaExists(schemaName))
-                setSchemaForTopic(schemaName)
-            else
-                setEmptySchemaForTopic()
+            when (dataManager.schemaExists(schemaName)) {
+                true -> setSchemaForTopic(schemaName)
+                false -> setEmptySchemaForTopic()
+                // The list only has some of the schemas of the registry, and not this one: ask the registry.
+                null -> checkSchemaExists(id, schemaName)
+            }
         }
         // Otherwise stay in loading state until listener fires
         curComponent.revalidate()
         curComponent.repaint()
+    }
+
+    private fun checkSchemaExists(topic: String, schemaName: String) {
+        existenceCheck = scope.launch {
+            val exists = try {
+                dataManager.checkSchemaExists(schemaName)
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Like a registry that has no schemas, which is what the list says when it could not be loaded.
+                thisLogger().warn("Failed to find out if the schema '$schemaName' exists", e)
+                false
+            }
+
+            withContext(Dispatchers.EDT) {
+                // The topic that was selected meanwhile has its own check.
+                if (topicName != topic) return@withContext
+                if (exists) setSchemaForTopic(schemaName) else setEmptySchemaForTopic()
+                curComponent.revalidate()
+                curComponent.repaint()
+            }
+        }
     }
 
     private fun setLoadingState() {

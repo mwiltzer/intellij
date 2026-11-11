@@ -148,6 +148,12 @@ class KafkaDataManager(
             ?: client.glueRegistryClient?.listSchemas(filter = null)?.first
             ?: emptyList()
 
+    // Only a Confluent registry can leave out the schemas that do not start with a prefix.
+    override suspend fun listSchemasNamesByPrefix(prefix: String): List<KafkaSchemaInfo>? =
+        client.confluentRegistryClient?.let { registry ->
+            withContext(Dispatchers.IO) { registry.listSchemasByPrefix(prefix) }
+        }
+
     override suspend fun listVisibleTopicNames(): Set<String>? = withContext(Dispatchers.IO) {
         client.getVisibleTopicNames()
     }

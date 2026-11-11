@@ -63,6 +63,8 @@ internal class KafkaRegistryController(
     private val emptyPanel = JBPanelWithEmptyText(BorderLayout())
 
     private val searchTextField: SearchTextField = SearchTextField(false).apply {
+        textEditor.emptyText.text = KafkaMessagesBundle.message("schemas.filter.placeholder")
+        textEditor.toolTipText = KafkaMessagesBundle.message("schemas.filter.tooltip")
         addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) {
                 val config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(dataManager.getSchemaRegistryConfigId())

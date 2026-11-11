@@ -385,6 +385,12 @@ A Schema Registry can have thousands of schemas. The **Schema Registry** section
 with:
 
 * Type in the filter field to show only the schemas whose names contain the text, ignoring case.
+* Start the text with `^` to show the schemas whose names begin with it instead, for example `^orders-`. This is
+  case-sensitive. With a Confluent Schema Registry that you reach through a Kafka connection, the registry then lists
+  only those schemas, which takes a fraction of the time that listing thousands of schemas does. A longer prefix is
+  served from what a shorter one listed, and the registry is asked once you stop typing. Confluent Cloud and AWS Glue
+  list all schemas and pick the matching ones, so the filter shows the same schemas there, and so does a registry that
+  does not know the prefix and answers with all of its schemas. A `^` alone changes nothing until you type the prefix.
 * With a Confluent Schema Registry, two switches in the toolbar decide which schemas are hidden. Both are off by
   default:
     * Click ![Show Internal Schemas](icons/app.actions.toggleVisibility.svg) (**Show Internal Schemas**) to also show

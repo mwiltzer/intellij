@@ -8,10 +8,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -23,6 +26,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 @TestApplication
@@ -54,6 +58,7 @@ class SchemaRegistryListTest {
         names: List<String> = (1..10).map { "subject-%02d".format(it) },
         registry: Registry = Registry(),
         detailsDelayMillis: Long = 0,
+        prefixSettleMillis: Long = 0,
         prepare: suspend () -> Unit = {}
     ) {
         val registry = registry
@@ -67,16 +72,34 @@ class SchemaRegistryListTest {
         var settings = SchemaListSettings(filter = null, pinned = emptySet(), favoritesOnly = false, limit = null)
         val refreshes = AtomicInteger()
 
+        // What the registry listed for prefixes, as far as the list knows it, and what it was asked for by prefix.
+        val prefixListings = CopyOnWriteArrayList<SchemaListing>()
+        val fetches = ConcurrentLinkedQueue<String>()
+
+        @Volatile
+        var cached: (String?) -> SchemaListing? = { prefix ->
+            SchemaListings.bestFor(prefix, listOfNotNull(listing) + prefixListings)
+        }
+
+        // A registry that can not list by prefix, unless a test says otherwise.
+        @Volatile
+        var fetch: suspend (String) -> SchemaListing? = { null }
+
         val model = ObjectDataModel<KafkaSchemaInfo>(KafkaSchemaInfo::name) { emptyList<KafkaSchemaInfo>() to false }
         val list = SchemaRegistryList(
             scope = scope,
             resolver = resolver,
-            cachedListing = { listing },
+            cachedListing = { prefix -> cached(prefix) },
             settings = { settings },
             model = { model },
             refreshFromRegistry = { refreshes.incrementAndGet() },
             detailsDelayMillis = detailsDelayMillis,
-            prepare = prepare
+            prepare = prepare,
+            fetchListing = { prefix ->
+                fetches += prefix
+                fetch(prefix)
+            },
+            prefixSettleMillis = prefixSettleMillis
         )
 
         val shownNames get() = model.data?.map { it.name }
@@ -88,6 +111,9 @@ class SchemaRegistryListTest {
     private fun eventually(condition: () -> Boolean) = runBlocking {
         withTimeout(5_000) { while (!condition()) delay(5) }
     }
+
+    // What the list still has going on: a wait to ask the registry, details that are loaded.
+    private fun activeJobs() = scope.coroutineContext[Job]!!.children.count { it.isActive }
 
     @Nested
     inner class View {
@@ -449,6 +475,478 @@ class SchemaRegistryListTest {
             val current = listOf(KafkaSchemaInfo("subject-02"))
 
             assertSame(current, SchemaRegistryList.mergeDetails(current, emptyList()))
+        }
+    }
+
+    @Nested
+    inner class `Prefix filter` {
+
+        private val registry = listOf(
+            "orders-key", "orders-value", "ordinary-value", "payments-key", "payments-value", "subject-01", "Orders-value"
+        )
+
+        private fun listingOf(prefix: String?, loadedAt: Long = 0): SchemaListing =
+            SchemaListing(
+                registry.filter { prefix == null || it.startsWith(prefix) }.sortedBy { it.lowercase() }.map { KafkaSchemaInfo(it) },
+                prefix,
+                loadedAt
+            )
+
+        /** A fixture whose registry lists by prefix, and whose list remembers what it listed like the data manager does. */
+        private fun fixtureOfPrefixes(prefixSettleMillis: Long = 0, hasFullListing: Boolean = false): Fixture =
+            Fixture(prefixSettleMillis = prefixSettleMillis).also { fixture ->
+                if (!hasFullListing) fixture.listing = null
+                fixture.fetch = { prefix -> listingOf(prefix).also { fixture.prefixListings += it } }
+            }
+
+        private fun Fixture.filter(text: String?) {
+            settings = settings.copy(filter = text)
+            list.refilter()
+        }
+
+        private fun settle() = runBlocking { delay(250) }
+
+        @Test
+        fun `should ask the registry for the schemas that start with the prefix`() {
+            val fixture = fixtureOfPrefixes()
+
+            fixture.filter("^orders")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            assertEquals(listOf("orders"), fixture.fetches.toList())
+            assertEquals(0, fixture.refreshes.get())
+        }
+
+        @Test
+        fun `should take the case of the prefix as it is`() {
+            val fixture = fixtureOfPrefixes()
+
+            fixture.filter("^Orders")
+
+            eventually { fixture.shownNames == listOf("Orders-value") }
+        }
+
+        @Test
+        fun `should show nothing for a prefix that no schema has`() {
+            val fixture = fixtureOfPrefixes()
+
+            fixture.filter("^nothing")
+
+            eventually { fixture.shownNames == emptyList<String>() }
+            assertEquals(listOf("nothing"), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should not ask the registry for a prefix when all the schemas are there`() {
+            val fixture = Fixture()
+
+            fixture.filter("^subject-0")
+
+            eventually { fixture.shownNames == (1..9).map { "subject-%02d".format(it) } }
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+            assertEquals(0, fixture.refreshes.get())
+        }
+
+        @Test
+        fun `should serve a longer prefix out of the listing of a shorter one`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.filter("^ord")
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value", "ordinary-value") }
+
+            fixture.filter("^orders")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            fixture.filter("^orders-v")
+            eventually { fixture.shownNames == listOf("orders-value") }
+            assertEquals(listOf("ord"), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should ask again for a shorter prefix`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.filter("^orders")
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+
+            fixture.filter("^or")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value", "ordinary-value") }
+            assertEquals(listOf("orders", "or"), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should ask once the typing pauses and not for every key`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 300)
+
+            "^orders".indices.forEach { length ->
+                fixture.filter("^orders".substring(0, length + 1))
+                Thread.sleep(20)
+            }
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            assertEquals(listOf("orders"), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should not ask for a prefix that was typed and changed again`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 200)
+
+            fixture.filter("^pay")
+            Thread.sleep(50)
+            fixture.filter("^ord")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value", "ordinary-value") }
+            Thread.sleep(300)
+            assertEquals(listOf("ord"), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should wait for the typing to pause again after every key`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 1_000)
+
+            fixture.filter("^or")
+            Thread.sleep(600)
+            fixture.filter("^ord")
+            // The wait that began with the first key is over by now, the one that began with the last key is not.
+            Thread.sleep(600)
+
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value", "ordinary-value") }
+            assertEquals(listOf("ord"), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should not ask for anything when the filter went back to a caret alone while it waited`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 200)
+
+            fixture.filter("^pay")
+            Thread.sleep(50)
+            fixture.filter("^")
+            Thread.sleep(500)
+
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+            assertNull(fixture.model.data)
+            assertEquals(0, fixture.refreshes.get())
+        }
+
+        @Test
+        fun `should not ask for anything when the filter is no prefix any more when the wait is over`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 200)
+
+            fixture.filter("^pay")
+            // Nobody asks the list to follow the change, so the wait is not replaced.
+            fixture.settings = fixture.settings.copy(filter = "pay")
+            Thread.sleep(500)
+
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should drop the wait for a prefix when a listing serves the filter that comes next`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 60_000)
+            fixture.prefixListings += listingOf("ord")
+            fixture.filter("^pay")
+            eventually { activeJobs() == 1 }
+
+            fixture.filter("^ord")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value", "ordinary-value") }
+            eventually { activeJobs() == 0 }
+        }
+
+        @Test
+        fun `should not show what was listed for the prefix that was typed before`() = runBlocking<Unit> {
+            val release = CompletableDeferred<Unit>()
+            val fixture = fixtureOfPrefixes()
+            // The registry takes its time, and does not stop for a list that is not wanted any more.
+            fixture.fetch = { prefix ->
+                if (prefix == "ord") withContext(NonCancellable) { release.await() }
+                listingOf(prefix).also { fixture.prefixListings += it }
+            }
+            fixture.filter("^ord")
+            eventually { fixture.fetches.toList() == listOf("ord") }
+
+            fixture.filter("^pay")
+            eventually { fixture.shownNames == listOf("payments-key", "payments-value") }
+            release.complete(Unit)
+            delay(150)
+
+            assertEquals(listOf("payments-key", "payments-value"), fixture.shownNames)
+        }
+
+        @Test
+        fun `should not show what was listed for a prefix when the filter asks for something else by then`() =
+            runBlocking<Unit> {
+                val release = CompletableDeferred<Unit>()
+                val fixture = fixtureOfPrefixes()
+                fixture.fetch = { prefix ->
+                    release.await()
+                    listingOf(prefix).also { fixture.prefixListings += it }
+                }
+                fixture.filter("^ord")
+                eventually { fixture.fetches.toList() == listOf("ord") }
+
+                // The filter changes, and nobody asks the list to follow it yet, so the request is not replaced.
+                fixture.settings = fixture.settings.copy(filter = "^pay")
+                release.complete(Unit)
+
+                eventually { fixture.prefixListings.size == 1 }
+                delay(150)
+                // What was listed for "ord" has not got what "pay" asks for.
+                assertNull(fixture.model.data)
+                assertEquals(0, fixture.refreshes.get())
+            }
+
+        @Test
+        fun `should show what was listed for the prefix that was typed before when the filter still asks for it`() =
+            runBlocking<Unit> {
+                val release = CompletableDeferred<Unit>()
+                val fixture = fixtureOfPrefixes()
+                fixture.fetch = { prefix ->
+                    release.await()
+                    listingOf(prefix).also { fixture.prefixListings += it }
+                }
+                fixture.filter("^ord")
+                eventually { fixture.fetches.toList() == listOf("ord") }
+
+                // The prefix gets longer, so what is listed for "ord" has all that the filter asks for.
+                fixture.settings = fixture.settings.copy(filter = "^orders")
+                release.complete(Unit)
+
+                eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            }
+
+        @Test
+        fun `should not wait for the registry when a listing that has the schemas is there by then`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 300)
+            fixture.filter("^orders")
+            Thread.sleep(50)
+
+            fixture.prefixListings += listingOf("ord")
+            fixture.filter("^orders")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            Thread.sleep(400)
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should use what was listed meanwhile when the wait is over`() {
+            val fixture = fixtureOfPrefixes(prefixSettleMillis = 200)
+            fixture.filter("^orders")
+
+            // What a request that is still running for a shorter prefix brings.
+            fixture.prefixListings += listingOf("ord")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should show the complete listing when the registry can not list by prefix`() {
+            val fixture = fixtureOfPrefixes()
+            // What the data manager gives then: the listing of all schemas.
+            fixture.fetch = { listingOf(null) }
+
+            fixture.filter("^ord")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value", "ordinary-value") }
+            assertEquals(0, fixture.refreshes.get())
+        }
+
+        @Test
+        fun `should let the model list the registry when there is no way to list by prefix`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.fetch = { null }
+
+            fixture.filter("^ord")
+
+            eventually { fixture.refreshes.get() == 1 }
+        }
+
+        @Test
+        fun `should let the model list the registry when the request for the prefix failed`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.fetch = { error("registry unavailable") }
+
+            fixture.filter("^ord")
+
+            eventually { fixture.refreshes.get() == 1 }
+            assertNull(fixture.model.data)
+        }
+
+        @Test
+        fun `should not let the model list the registry for a request that was cancelled`() {
+            val fixture = fixtureOfPrefixes()
+            val started = CompletableDeferred<Unit>()
+            fixture.fetch = { started.complete(Unit); CompletableDeferred<SchemaListing?>().await() }
+            fixture.filter("^ord")
+            runBlocking { withTimeout(5_000) { started.await() } }
+
+            // Another filter replaces the request.
+            fixture.fetch = { prefix -> listingOf(prefix).also { fixture.prefixListings += it } }
+            fixture.filter("^pay")
+
+            eventually { fixture.shownNames == listOf("payments-key", "payments-value") }
+            settle()
+            assertEquals(0, fixture.refreshes.get())
+        }
+
+        @Test
+        fun `should keep the list as it is for a caret alone`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.filter("^orders")
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+
+            fixture.filter("^")
+            settle()
+
+            assertEquals(listOf("orders-key", "orders-value"), fixture.shownNames)
+            assertEquals(listOf("orders"), fixture.fetches.toList())
+            assertEquals(0, fixture.refreshes.get())
+        }
+
+        @Test
+        fun `should show everything for a caret alone when all the schemas are there`() {
+            val fixture = Fixture()
+
+            fixture.filter("^")
+
+            eventually { fixture.shownNames?.size == 10 }
+        }
+
+        @Test
+        fun `should not ask for a prefix when the filter is no prefix`() {
+            val fixture = fixtureOfPrefixes()
+
+            fixture.filter("orders")
+            eventually { fixture.refreshes.get() == 1 }
+
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should show all schemas that contain the text again after a prefix`() {
+            val fixture = Fixture()
+            fixture.filter("^subject-0")
+            eventually { fixture.shownNames?.size == 9 }
+
+            fixture.filter("-10")
+
+            eventually { fixture.shownNames == listOf("subject-10") }
+            assertEquals(emptyList<String>(), fixture.fetches.toList())
+        }
+
+        @Test
+        fun `should not use a listing of a prefix for a filter that is no prefix`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.filter("^orders")
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+
+            fixture.filter("value")
+
+            // Only a listing of all schemas can tell which schemas contain a text.
+            eventually { fixture.refreshes.get() == 1 }
+            assertEquals(listOf("orders-key", "orders-value"), fixture.shownNames)
+        }
+
+        @Test
+        fun `should load the details of the schemas it fetched`() {
+            val fixture = fixtureOfPrefixes()
+
+            fixture.filter("^orders")
+
+            eventually { fixture.shownWithDetails() == listOf("orders-key", "orders-value") }
+            assertEquals(listOf("orders-key", "orders-value"), fixture.requestedNames)
+        }
+
+        @Test
+        fun `should leave out the internal schemas it fetched and count them`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.fetch = { prefix ->
+                SchemaListing(listOf("_a-value", "_b-value").map { KafkaSchemaInfo(it) }, prefix)
+                    .also { fixture.prefixListings += it }
+            }
+            fixture.settings = fixture.settings.copy(showInternal = false)
+
+            fixture.filter("^_")
+
+            eventually { fixture.shownNames == emptyList<String>() }
+            assertEquals(HiddenSchemas(internal = 2, otherTopics = 0), fixture.list.hidden)
+        }
+
+        @Test
+        fun `should leave out the schemas of other topics it fetched and count them`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.settings = fixture.settings.copy(visibleTopics = setOf("orders"))
+
+            fixture.filter("^o")
+
+            eventually { fixture.shownNames == listOf("orders-key", "orders-value") }
+            assertEquals(HiddenSchemas(internal = 0, otherTopics = 1), fixture.list.hidden)
+        }
+
+        @Test
+        fun `should keep the favorite mark of the schemas it fetched`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.settings = fixture.settings.copy(pinned = setOf("orders-value"))
+
+            fixture.filter("^orders")
+
+            eventually { fixture.shownNames == listOf("orders-value", "orders-key") }
+            assertTrue(fixture.model.data!!.first().isFavorite)
+        }
+
+        @Test
+        fun `should show the schemas the limit leaves out as more`() {
+            val fixture = fixtureOfPrefixes()
+            fixture.settings = fixture.settings.copy(limit = 1)
+
+            fixture.filter("^orders")
+
+            eventually { fixture.shownNames == listOf("orders-key") }
+            assertTrue(fixture.model.loadMore)
+        }
+    }
+
+    @Nested
+    inner class `View of a prefix filter` {
+
+        private fun listingOf(prefix: String?, vararg names: String) =
+            SchemaListing(names.map { KafkaSchemaInfo(it) }, prefix)
+
+        @Test
+        fun `should make the list out of a listing that has all the schemas for the prefix`() {
+            val fixture = Fixture()
+            fixture.settings = fixture.settings.copy(filter = "^orders-v")
+
+            val (shown, _) = fixture.list.view(listingOf("ord", "orders-key", "orders-value", "ordinary"))
+
+            assertEquals(listOf("orders-value"), shown.map { it.name })
+        }
+
+        @Test
+        fun `should take a listing that serves the filter now if the one it was given does not`() {
+            val fixture = Fixture()
+            val serving = listingOf(null, "payments-key", "payments-value", "orders-value")
+            fixture.cached = { prefix -> serving.takeIf { it.covers(prefix) } }
+            // The registry was asked for "ord" while the filter was changed to ask for "pay".
+            fixture.settings = fixture.settings.copy(filter = "^pay")
+
+            val (shown, _) = fixture.list.view(listingOf("ord", "orders-key", "orders-value"))
+
+            assertEquals(listOf("payments-key", "payments-value"), shown.map { it.name })
+        }
+
+        @Test
+        fun `should make the list out of the listing it was given when nothing serves the filter better`() {
+            val fixture = Fixture()
+            fixture.cached = { null }
+            fixture.settings = fixture.settings.copy(filter = "^pay")
+
+            val (shown, _) = fixture.list.view(listingOf("ord", "orders-key", "payments-key"))
+
+            // Better than nothing: the change of the filter brings the list it asks for.
+            assertEquals(listOf("payments-key"), shown.map { it.name })
         }
     }
 }

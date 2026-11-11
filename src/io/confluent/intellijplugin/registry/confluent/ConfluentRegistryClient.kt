@@ -25,7 +25,7 @@ import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig
 import org.apache.kafka.common.config.ConfigDef
 import java.net.HttpURLConnection
 
-class ConfluentRegistryClient(restService: RestService, props: Map<String, String>) : Disposable {
+class ConfluentRegistryClient(private val restService: RestService, props: Map<String, String>) : Disposable {
     val internalClient = CachedSchemaRegistryClient(
         restService,
         SCHEMA_CACHE_CAPACITY,
@@ -47,6 +47,20 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
      */
     fun listSchemas(registryShowDeletedSubjects: Boolean = false): List<KafkaSchemaInfo> =
         toSchemas(internalClient.getAllSubjects(registryShowDeletedSubjects))
+
+    /**
+     * The subjects of the registry that start with [prefix], listed like [listSchemas] does. The registry only
+     * answers with those, which is a fraction of listing them all. `null` if it does not accept the parameter of the
+     * request, or does not know it and lists all subjects: the caller can list all subjects then.
+     */
+    fun listSchemasByPrefix(prefix: String, registryShowDeletedSubjects: Boolean = false): List<KafkaSchemaInfo>? = try {
+        val subjects = restService.getAllSubjects(prefix, registryShowDeletedSubjects)
+        // A registry that does not know the parameter answers with all its subjects, which is no listing of the prefix
+        // and not the fraction of the work either. Asking it again for another prefix would cost all that again.
+        if (subjects.orEmpty().any { !it.startsWith(prefix) }) null else toSchemas(subjects)
+    } catch (e: RestClientException) {
+        if (e.status in QUERY_PARAMETERS_REFUSED) null else throw e
+    }
 
     private fun toSchemas(subjects: Collection<String>?): List<KafkaSchemaInfo> =
         (subjects ?: emptyList())
@@ -147,6 +161,9 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
          * subjects: going through them (e.g. to find out their formats) then requested every subject again and again.
          */
         private const val SCHEMA_CACHE_CAPACITY = 1000
+
+        // What a registry answers when it does not know a parameter of a request for the subjects, e.g. the page.
+        private val QUERY_PARAMETERS_REFUSED = setOf(HttpURLConnection.HTTP_BAD_REQUEST, 422)
 
         fun createFor(project: Project?, connectionData: KafkaConnectionData, testConnection: Boolean) =
             createConfluentClient(connectionData, project, testConnection)

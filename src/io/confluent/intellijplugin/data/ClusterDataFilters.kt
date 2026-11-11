@@ -81,11 +81,28 @@ internal object ClusterDataFilters {
     }
 
     /**
-     * Whether the [name] passes the [filter]: it contains the filter, regardless of the case. No filter, or a blank
-     * one, lets every name pass. The filter is plain text: characters such as `(` or `.` mean themselves.
+     * Whether the [name] passes the [filter]. No filter, or a blank one, lets every name pass.
+     *
+     * A filter that starts with `^` asks for the names that start with what follows it, see [prefixOf], and takes the
+     * case as it is. Any other filter is a text the name contains, regardless of the case. The filter is plain
+     * text: characters such as `(` or `.` mean themselves.
      */
-    fun matchesName(name: String, filter: String?): Boolean =
-        filter.isNullOrBlank() || name.contains(filter, ignoreCase = true)
+    fun matchesName(name: String, filter: String?): Boolean {
+        if (filter.isNullOrBlank()) return true
+        val prefix = prefixOf(filter) ?: return name.contains(filter, ignoreCase = true)
+        return name.startsWith(prefix)
+    }
+
+    /**
+     * The prefix that the [filter] asks the names to start with: `orders` for `^orders`. Empty for a `^` alone, that is
+     * a filter that is still being typed and lets every name pass. `null` for a filter that is no prefix.
+     *
+     * The registry can list the subjects with a prefix, which is much cheaper than listing all of them.
+     */
+    fun prefixOf(filter: String?): String? =
+        filter?.takeIf { it.startsWith(PREFIX_MARK) }?.substring(PREFIX_MARK.length)
+
+    private const val PREFIX_MARK = "^"
 
     fun sortSchemasWithFavorites(
         schemas: List<KafkaSchemaInfo>,

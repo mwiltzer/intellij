@@ -18,6 +18,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
 - Loading topics, schema names or schema details that takes a second or longer is now logged at INFO level in `idea.log`, which helps to find out why a connection feels slow
+- The filter of the Schema Registry section can show the schemas whose names begin with the text: start it with `^`, like `^orders-`. Unlike the plain filter this is case-sensitive. A Confluent Schema Registry that you reach through a Kafka connection then lists only those schemas, which takes a fraction of the time listing thousands of schemas does, and a longer prefix is served from what a shorter one listed. Confluent Cloud and AWS Glue list all schemas as before and pick the matching ones, so the filter shows the same schemas, and so does a registry that does not know the prefix and answers with all of its schemas. A `^` alone changes nothing until you type the prefix. The tooltip of the filter field says so
 ### Removed
 ### Fixed
 - Deleting a consumer group that the broker rejects (for example, one that still has active members) now shows an error instead of appearing to succeed.

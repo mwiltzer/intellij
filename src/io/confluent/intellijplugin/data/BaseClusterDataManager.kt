@@ -79,6 +79,18 @@ abstract class BaseClusterDataManager(
             }
         }
     }
+    // What the registry lists for a prefix: the filter of the tool window may ask for the schemas that start with a
+    // text, and a registry with thousands of schemas lists those a lot faster than all of them.
+    private val prefixListings: PrefixListings by lazy {
+        PrefixListings(schemaScope) { prefix ->
+            thisLogger().timed("Listing the schema names of connection $connectionId that start with '$prefix'") {
+                listSchemasNamesByPrefix(prefix)?.let { SchemaListing(it.sortedBy { schema -> schema.name.lowercase() }, prefix) }
+            }
+        }
+    }
+
+    // Decides which listing serves what, and when the registry is asked.
+    private val listings: SchemaListingCache by lazy { SchemaListingCache(schemaListing, prefixListings) }
 
     // The topics the user can see, to hide the schemas of the others. Not knowing them hides nothing.
     private val visibleTopics: ExpiringSingleFlight<VisibleTopics> by lazy {
@@ -99,7 +111,8 @@ abstract class BaseClusterDataManager(
         SchemaRegistryList(
             scope = schemaScope,
             resolver = schemaFormats,
-            cachedListing = schemaListing::peek,
+            cachedListing = listings::cachedFor,
+            fetchListing = { prefix -> listings.listingFor(prefix, refresh = false) },
             settings = ::currentSchemaListSettings,
             model = { schemaRegistryModel },
             refreshFromRegistry = { schemaRegistryModel?.let { updater.invokeRefreshModel(it) } },
@@ -167,6 +180,12 @@ abstract class BaseClusterDataManager(
      * not depend on them.
      */
     protected abstract suspend fun listSchemasNames(): List<KafkaSchemaInfo>
+
+    /**
+     * The schemas whose names start with [prefix], as [listSchemasNames] lists them, for a registry that can leave out
+     * all the others when it lists. `null` if it can not, which is then not tried again: all schemas are listed.
+     */
+    protected open suspend fun listSchemasNamesByPrefix(prefix: String): List<KafkaSchemaInfo>? = null
 
     protected abstract suspend fun updateSchemaList(
         schemas: List<KafkaSchemaInfo>
@@ -323,9 +342,15 @@ abstract class BaseClusterDataManager(
     /**
      * Whether the registry has the schema [name], as far as that is known without asking it. Also true for schemas
      * that the list of the tool window leaves out, because of its filter, its limit, or the schemas it hides.
+     *
+     * `null` if that is not known, e.g. because the list only has the schemas of a prefix and the registry was not asked
+     * for the others yet: [checkSchemaExists] asks.
      */
-    fun schemaExists(name: String): Boolean =
-        schemaListing.peek()?.contains(name) ?: (getCachedSchema(name) != null)
+    fun schemaExists(name: String): Boolean? =
+        listings.knownToHave(name) ?: true.takeIf { getCachedSchema(name) != null }
+
+    /** Whether the registry has the schema [name], found out with the cheapest request there is if it is not known. */
+    suspend fun checkSchemaExists(name: String): Boolean = schemaExists(name) ?: listings.has(name)
 
     open fun initRefreshSchemasIfRequired() {
         val schemaModel = schemaRegistryModel
@@ -373,7 +398,7 @@ abstract class BaseClusterDataManager(
 
     /** The schemas of the registry changed: the editors must not keep offering the names they got before. */
     protected fun invalidateSchemaNames() {
-        schemaListing.invalidate()
+        listings.clear()
     }
 
     /**
@@ -598,10 +623,14 @@ abstract class BaseClusterDataManager(
             if (refresh) visibleTopics.refresh() else visibleTopics.get()
         } else null
 
-        val listing = if (refresh) schemaListing.refresh() else schemaListing.get()
+        val prefix = ClusterDataFilters.prefixOf(currentSchemaFilter())
+        val listing = listings.listingFor(prefix, refresh)
         topics?.await()
         listing
     }
+
+    private fun currentSchemaFilter(): String? =
+        KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId()).schemaFilterName
 
     private fun createSchemaVersionsStorage() = FieldGroupsDataModelStorage<String, List<Long>>(updater) { schemaName ->
         try {
