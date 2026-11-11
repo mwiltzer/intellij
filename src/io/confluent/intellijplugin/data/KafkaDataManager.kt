@@ -18,10 +18,12 @@ import io.confluent.intellijplugin.core.rfs.driver.manager.DriverManager
 import io.confluent.intellijplugin.core.rfs.util.RfsNotificationUtils
 import io.confluent.intellijplugin.core.util.runAsync
 import io.confluent.intellijplugin.core.util.runAsyncSuspend
+import io.confluent.intellijplugin.core.util.toPresentableText
 import io.confluent.intellijplugin.model.*
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil.asSchemaWritePromise
+import io.confluent.intellijplugin.registry.SchemaUsage
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
 import io.confluent.intellijplugin.registry.common.hasLoadedDetails
@@ -164,6 +166,18 @@ class KafkaDataManager(
         return client.confluentRegistryClient?.listSchemaVersions(schemaName)
             ?: client.glueRegistryClient?.listSchemaVersions(schemaName)
             ?: emptyList()
+    }
+
+    override suspend fun loadSchemaUsages(schemaId: Int): List<SchemaUsage>? {
+        val registry = client.confluentRegistryClient ?: return null
+        return withContext(Dispatchers.IO) {
+            catchFailures<List<SchemaUsage>?>(onFailure = { t ->
+                thisLogger().info("Cannot look up the schema with ID $schemaId: ${t.toPresentableText()}")
+                null
+            }) {
+                registry.listSchemaUsages(schemaId)
+            }
+        }
     }
 
     @RequiresBackgroundThread

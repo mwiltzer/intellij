@@ -13,6 +13,7 @@ import io.confluent.intellijplugin.core.util.toPresentableText
 import io.confluent.intellijplugin.data.KafkaDataManager.Companion.sortedSchemas
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
+import io.confluent.intellijplugin.registry.SchemaUsage
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
 import io.confluent.intellijplugin.rfs.KafkaConnectionData
@@ -26,7 +27,7 @@ import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig
 import org.apache.kafka.common.config.ConfigDef
 import java.net.HttpURLConnection
 
-class ConfluentRegistryClient(restService: RestService, props: Map<String, String>) : Disposable {
+class ConfluentRegistryClient(private val restService: RestService, props: Map<String, String>) : Disposable {
     val internalClient = CachedSchemaRegistryClient(
         restService,
         SCHEMA_CACHE_CAPACITY,
@@ -55,6 +56,16 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
         return filteredNames.map { KafkaSchemaInfo(it) }.sortedSchemas(connectionId).take(
             limit ?: Int.MAX_VALUE
         ) to (limit != null && names.size > limit)
+    }
+
+    /**
+     * The subjects, and the versions of them, that the schema with the ID the registry gave it is registered as.
+     * A schema that is registered under several subjects has one ID. Nothing for an ID the registry does not know.
+     */
+    fun listSchemaUsages(schemaId: Int): List<SchemaUsage> = try {
+        restService.getAllVersionsById(schemaId).map { SchemaUsage(it.subject, it.version) }
+    } catch (e: RestClientException) {
+        if (e.status == HttpURLConnection.HTTP_NOT_FOUND) emptyList() else throw e
     }
 
     fun loadSchemaInfo(schemaName: String): KafkaSchemaInfo {

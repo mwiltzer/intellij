@@ -14,6 +14,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
 - Loading topics, schema names or schema details that takes a second or longer is now logged at INFO level in `idea.log`, which helps to find out why a connection feels slow
+- The details of a consumed record show the schema the record was written with: **Key schema** and **Value schema** with the ID of the schema and the subjects and versions it is registered as, like `100016 (orders-value, version 3)`. A schema that is registered under many subjects shows the subjects of the topic first and counts the others. Records that name a schema by its GUID show the GUID. The Schema Registry is asked once for each ID, which is remembered for a few minutes, and the details of the record do not wait for it. For Confluent Schema Registries including Confluent Cloud
 ### Removed
 ### Fixed
 - Deleting a consumer group that the broker rejects (for example, one that still has active members) now shows an error instead of appearing to succeed.

@@ -5,6 +5,7 @@ import com.amazonaws.services.schemaregistry.serializers.GlueSchemaRegistryKafka
 import com.amazonaws.services.schemaregistry.utils.AWSSchemaRegistryConstants
 import com.amazonaws.services.schemaregistry.utils.AvroRecordType
 import com.amazonaws.services.schemaregistry.utils.ProtobufMessageType
+import com.google.protobuf.Message
 import io.confluent.intellijplugin.consumer.models.ConsumerProducerFieldConfig
 import io.confluent.intellijplugin.data.KafkaDataManager
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
@@ -46,11 +47,16 @@ enum class KafkaFieldType(@Nls val title: String) {
 
                 when (dataManager.registryType) {
                     KafkaRegistryType.NONE -> error("Non exists")
-                    KafkaRegistryType.CONFLUENT -> when (registryFormat) {
-                        KafkaRegistryFormat.AVRO -> KafkaAvroDeserializer(dataManager.client.confluentRegistryClient?.internalClient)
-                        KafkaRegistryFormat.PROTOBUF -> KafkaProtobufDeserializer(dataManager.client.confluentRegistryClient?.internalClient)
-                        KafkaRegistryFormat.JSON -> KafkaJsonSchemaDeserializer(dataManager.client.confluentRegistryClient?.internalClient)
-                        KafkaRegistryFormat.UNKNOWN -> error("Schema is deleted")
+                    KafkaRegistryType.CONFLUENT -> {
+                        val deserializer: Deserializer<*> = when (registryFormat) {
+                            KafkaRegistryFormat.AVRO -> KafkaAvroDeserializer(dataManager.client.confluentRegistryClient?.internalClient)
+                            KafkaRegistryFormat.PROTOBUF -> KafkaProtobufDeserializer<Message>(dataManager.client.confluentRegistryClient?.internalClient)
+                            KafkaRegistryFormat.JSON -> KafkaJsonSchemaDeserializer<Any>(dataManager.client.confluentRegistryClient?.internalClient)
+                            KafkaRegistryFormat.UNKNOWN -> error("Schema is deleted")
+                        }
+                        // The record shows which schema it was written with, which the deserializer does not tell.
+                        @Suppress("UNCHECKED_CAST")
+                        SchemaIdRecordingDeserializer<Any?>(deserializer as Deserializer<Any?>)
                     }
 
                     KafkaRegistryType.AWS_GLUE -> when (registryFormat) {

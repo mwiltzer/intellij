@@ -29,6 +29,7 @@ import io.confluent.intellijplugin.consumer.editor.KafkaConsumerSettings
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
+import io.confluent.intellijplugin.registry.SchemaUsage
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
@@ -49,7 +50,7 @@ abstract class BaseClusterDataManager(
     project: Project?,
     settings: IntervalUpdateSettings,
     driverProvider: () -> MonitoringDriver
-) : MonitoringDataManager(project, settings, driverProvider), SchemaFormats {
+) : MonitoringDataManager(project, settings, driverProvider), SchemaFormats, SchemaUsageSource {
 
     abstract val connectionId: String
     abstract val registryType: KafkaRegistryType
@@ -76,6 +77,11 @@ abstract class BaseClusterDataManager(
                 listSchemasNames(limit = null, filter = null).first.map { it.name }.sortedBy { it.lowercase() }
             }
         }
+    }
+
+    // What the records tell about their schemas, shared by all the editors of the connection.
+    private val schemaUsages: RecordSchemaLookup by lazy {
+        RecordSchemaLookup(schemaScope) { loadSchemaUsages(it) }
     }
 
     /**
@@ -316,6 +322,21 @@ abstract class BaseClusterDataManager(
 
     override fun getCachedSchemaNames(): List<String>? = schemaNames.peek()
 
+    /**
+     * The subjects, and the versions of them, that the schema with the ID [schemaId] is registered as. This is what
+     * a record tells about the schema it was written with. The registry answers once for all the records that share
+     * the schema, see [RecordSchemaLookup].
+     */
+    override suspend fun getSchemaUsages(schemaId: Int): List<SchemaUsage>? = schemaUsages.usagesOf(schemaId)
+
+    override fun getCachedSchemaUsages(schemaId: Int): List<SchemaUsage>? = schemaUsages.known(schemaId)
+
+    /**
+     * Asks the registry for the subjects and versions of the schema with the ID [schemaId]. Nothing if the registry
+     * does not know the ID; `null` if it can not be asked, or has no schema IDs, as the registry of AWS Glue.
+     */
+    protected open suspend fun loadSchemaUsages(schemaId: Int): List<SchemaUsage>? = null
+
     override fun getKnownSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.known(name)
 
     override suspend fun getSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.formatOf(name)
@@ -332,6 +353,7 @@ abstract class BaseClusterDataManager(
     /** The schemas of the registry changed: the editors must not keep offering the names they got before. */
     protected fun invalidateSchemaNames() {
         schemaNames.invalidate()
+        schemaUsages.clear()
     }
 
     abstract suspend fun getLatestVersionInfo(schemaName: String): SchemaVersionInfo?

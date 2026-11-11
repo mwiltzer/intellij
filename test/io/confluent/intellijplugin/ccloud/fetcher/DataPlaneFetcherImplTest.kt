@@ -10,6 +10,7 @@ import io.confluent.intellijplugin.ccloud.client.signedInAuthService
 import io.confluent.intellijplugin.ccloud.client.testClient
 import io.confluent.intellijplugin.ccloud.model.response.ConsumeRecordsRequest
 import io.confluent.intellijplugin.ccloud.client.ccloudResourceFixture
+import io.confluent.intellijplugin.ccloud.model.response.SubjectVersionResponse
 import io.confluent.intellijplugin.testutil.fixture
 import io.confluent.intellijplugin.testutil.wireMockExtension
 import kotlinx.coroutines.runBlocking
@@ -294,6 +295,44 @@ class DataPlaneFetcherImplTest {
             assertEquals("AVRO", result.schemaType)
             assertNotNull(result.schema)
             assertTrue(result.schema.contains("User"))
+        }
+    }
+
+    @Nested
+    @DisplayName("getSchemaVersionsById")
+    inner class GetSchemaVersionsByIdTests {
+
+        @Test
+        fun `fetches the subjects and versions that use a schema`() = runBlocking {
+            stubSchemaRegistryGet("/schemas/ids/100001/versions", ccloudResourceFixture("schema-versions-by-id.json"))
+
+            val result = fetcher.getSchemaVersionsById(100001)
+
+            assertEquals(
+                listOf(SubjectVersionResponse("user-schema-value", 3), SubjectVersionResponse("audit-log-value", 1)),
+                result
+            )
+        }
+
+        @Test
+        fun `fetches nothing for a schema that no subject uses`() = runBlocking {
+            stubSchemaRegistryGet("/schemas/ids/100002/versions", "[]")
+
+            assertEquals(emptyList<SubjectVersionResponse>(), fetcher.getSchemaVersionsById(100002))
+        }
+
+        @Test
+        fun `reports a schema the registry does not know with its status`() {
+            wireMock.stubFor(
+                get("/schemas/ids/99/versions").willReturn(
+                    aResponse().withStatus(404).withHeader("Content-Type", "application/json")
+                        .withBody("""{"error_code":40403,"message":"Schema 99 not found"}""")
+                )
+            )
+
+            val failure = assertThrows<CCloudApiException> { runBlocking { fetcher.getSchemaVersionsById(99) } }
+
+            assertEquals(404, failure.statusCode)
         }
     }
 

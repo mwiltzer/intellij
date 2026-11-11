@@ -12,6 +12,7 @@ import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import io.confluent.intellijplugin.ccloud.cache.DataPlaneCache
 import io.confluent.intellijplugin.ccloud.fetcher.DataPlaneFetcher
+import io.confluent.intellijplugin.ccloud.fetcher.listSchemaUsages
 import io.confluent.intellijplugin.ccloud.model.Cluster
 import io.confluent.intellijplugin.ccloud.model.response.CreateTopicRequest
 import io.confluent.intellijplugin.ccloud.model.response.RegisterSchemaRequest
@@ -41,6 +42,7 @@ import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil.asSchemaWritePromise
+import io.confluent.intellijplugin.registry.SchemaUsage
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaReference
@@ -440,6 +442,14 @@ class CCloudClusterDataManager(
         } catch (e: Exception) {
             thisLogger().warn("Failed to list schema versions for '$schemaName' in cluster ${cluster.id}", e)
             emptyList()
+        }
+    }
+
+    override suspend fun loadSchemaUsages(schemaId: Int): List<SchemaUsage>? = withContext(Dispatchers.IO) {
+        if (!dataPlaneCache.hasSchemaRegistry()) return@withContext null
+        val fetcher = dataPlaneCache.getFetcher() ?: return@withContext null
+        fetcher.listSchemaUsages(schemaId) { t ->
+            thisLogger().info("Cannot look up the schema with ID $schemaId in cluster ${cluster.id}: ${t.message}")
         }
     }
 

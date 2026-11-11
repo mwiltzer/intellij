@@ -198,6 +198,14 @@ class DataPlaneFetcherImpl(
         }
     }
 
+    override suspend fun getSchemaVersionsById(schemaId: Int): List<SubjectVersionResponse> {
+        requireSchemaRegistry()
+        val path = String.format(CloudConfig.DataPlane.SchemaRegistry.SCHEMA_VERSIONS_BY_ID_URI, schemaId)
+        return schemaRegistryClient!!.fetch(path) { body ->
+            json.decodeFromString(ListSerializer(SubjectVersionResponse.serializer()), body)
+        }
+    }
+
     override suspend fun getSchemaByGuid(guid: String): SchemaByIdResponse {
         requireSchemaRegistry()
         val path = String.format(CloudConfig.DataPlane.SchemaRegistry.SCHEMA_BY_GUID_URI, guid)

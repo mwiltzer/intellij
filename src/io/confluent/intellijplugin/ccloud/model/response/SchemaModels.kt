@@ -36,6 +36,13 @@ data class SchemaReferenceResponse(
     @SerialName("version") val version: Int
 )
 
+/** A subject, and the version of it that a schema is registered as. */
+@Serializable
+data class SubjectVersionResponse(
+    @SerialName("subject") val subject: String,
+    @SerialName("version") val version: Int
+)
+
 @Serializable
 data class SchemaByIdResponse(
     @SerialName("schema") val schema: String,

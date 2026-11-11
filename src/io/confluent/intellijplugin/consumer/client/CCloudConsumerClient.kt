@@ -22,6 +22,7 @@ import io.confluent.intellijplugin.data.CCloudClusterDataManager
 import io.confluent.intellijplugin.data.fetchResolvedReferences
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
+import io.confluent.intellijplugin.registry.SchemaIdHeaders
 import io.confluent.intellijplugin.util.KafkaOffsetUtils
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
 import io.confluent.kafka.schemaregistry.json.JsonSchema
@@ -695,6 +696,8 @@ class CCloudConsumerClient(
             ?: KafkaFieldType.STRING
 
         if (fieldType == KafkaFieldType.SCHEMA_REGISTRY) {
+            // The record tells which schema it was written with, which the payload does until it is deserialized.
+            SchemaIdHeaders.record(headers, isKey, bytes)
             return deserializeSchemaEncoded(bytes, fetcher, headers, isKey)
         }
 

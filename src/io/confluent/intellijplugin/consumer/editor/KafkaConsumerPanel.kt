@@ -82,7 +82,7 @@ class KafkaConsumerPanel(
         if (useWebViewMessageViewer) {
             thisLogger().info("WebView message viewer flag enabled, but implementation not ready. Using default viewer.")
         }
-        return KafkaRecordsOutput(project, isProducer = false)
+        return KafkaRecordsOutput(project, isProducer = false, schemaUsages = kafkaManager)
     }
 
     private val startSpecificDate = TimestampTextField(this)

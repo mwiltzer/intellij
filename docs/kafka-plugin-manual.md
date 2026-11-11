@@ -251,6 +251,13 @@ click ![Show Statistics](icons/app.expui.status.infoOutline.svg) to enable stati
 You can then click any record in the **Data** tab to show its details. You can also click Show Statistics to enable
 statistics.
 
+If the record was written with a Schema Registry schema, its details show the **Key schema** and the **Value schema**:
+the ID of the schema that the record names, and the subjects and versions it is registered as, like
+`100016 (orders-value, version 3)`. A schema that is registered under many subjects shows the subjects of the topic
+first and counts the others (`+4 more`). A record that names its schema by a GUID shows the GUID. The Schema Registry is
+asked once for each ID, and the answer is remembered for a few minutes. This works with Confluent Schema Registries,
+including Confluent Cloud. The details of the record do not wait for the answer.
+
 ---
 **NOTE:** To quickly create producers and consumers, assign shortcuts to these actions. Press **⌘Cmd ⇧Shift A** on macOS
 or **Ctrl Shift A** on Windows/Linux, type **Producer** or **Consumer**, and press **⌥Option ↩Enter** on macOS or **Alt

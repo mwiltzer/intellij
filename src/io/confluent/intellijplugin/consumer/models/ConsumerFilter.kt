@@ -1,5 +1,6 @@
 package io.confluent.intellijplugin.consumer.models
 
+import io.confluent.intellijplugin.registry.SchemaIdHeaders
 import org.apache.kafka.clients.consumer.ConsumerRecord
 
 data class ConsumerFilter(
@@ -13,9 +14,14 @@ data class ConsumerFilter(
     fun isRecordPassFilter(record: ConsumerRecord<Any, Any>): Boolean =
         isPassFilter(record.key()?.toString(), filterKey) &&
                 isPassFilter(record.value()?.toString(), filterValue) &&
-                isPassFilterHeaders(record.headers()?.mapNotNull { it.key() ?: "" } ?: emptyList(), filterHeadKey) &&
-                isPassFilterHeaders(record.headers()?.mapNotNull { it.value()?.decodeToString() } ?: emptyList(),
-                    filterHeadValue)
+                isPassFilterHeaders(record)
+
+    private fun isPassFilterHeaders(record: ConsumerRecord<Any, Any>): Boolean {
+        // What the plugin noted in the headers of the record is no part of what the producer sent.
+        val headers = SchemaIdHeaders.visible(record.headers())
+        return isPassFilterHeaders(headers.map { it.key() ?: "" }, filterHeadKey) &&
+                isPassFilterHeaders(headers.mapNotNull { it.value()?.decodeToString() }, filterHeadValue)
+    }
 
     private fun isPassFilter(value: String?, filterValue: String?): Boolean {
         if (filterValue == null)

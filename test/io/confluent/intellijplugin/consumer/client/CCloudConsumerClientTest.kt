@@ -31,6 +31,8 @@ import io.confluent.intellijplugin.testutil.wireMockExtension
 import io.confluent.intellijplugin.ccloud.model.response.PartitionData
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
+import io.confluent.intellijplugin.registry.RecordSchema
+import io.confluent.intellijplugin.registry.SchemaIdHeaders
 import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
 import io.confluent.kafka.schemaregistry.protobuf.MessageIndexes
@@ -1811,10 +1813,12 @@ class CCloudConsumerClientTest {
             timestampType: ApiTimestampType = ApiTimestampType.CREATE_TIME,
             headers: List<PartitionConsumeRecordHeader> = emptyList(),
             key: String? = "test-key",
-            value: String? = "test-value"
+            value: String? = "test-value",
+            keyBytes: ByteArray? = null,
+            valueBytes: ByteArray? = null
         ): PartitionConsumeRecord {
-            fun encodeRaw(s: String?) = if (s != null) {
-                JsonObject(mapOf("__raw__" to JsonPrimitive(Base64.getEncoder().encodeToString(s.toByteArray()))))
+            fun encodeRaw(bytes: ByteArray?) = if (bytes != null) {
+                JsonObject(mapOf("__raw__" to JsonPrimitive(Base64.getEncoder().encodeToString(bytes))))
             } else {
                 JsonNull
             }
@@ -1825,9 +1829,68 @@ class CCloudConsumerClientTest {
                 timestamp = timestamp,
                 timestampType = timestampType,
                 headers = headers,
-                key = encodeRaw(key),
-                value = encodeRaw(value)
+                key = encodeRaw(keyBytes ?: key?.toByteArray()),
+                value = encodeRaw(valueBytes ?: value?.toByteArray())
             )
+        }
+
+        @Test
+        fun `should note the schema ID of a value that uses the registry`() = runBlocking {
+            startWithConfigs(valueType = KafkaFieldType.SCHEMA_REGISTRY)
+            whenever(mockFetcher.getSchemaIdInfo(7)).thenReturn(
+                SchemaByIdResponse(schema = avroSchemaJson, schemaType = "AVRO")
+            )
+            val rec = record(valueBytes = buildV0Payload(7, encodeAvroPayload(avroSchemaJson, "Eve", 28)))
+
+            val result = client.convertToConsumerRecord(rec, "test-topic", mockFetcher)
+
+            assertEquals(RecordSchema(id = 7), SchemaIdHeaders.schemaOf(result.headers(), isKey = false))
+            assertNull(SchemaIdHeaders.schemaOf(result.headers(), isKey = true))
+        }
+
+        @Test
+        fun `should note the schema IDs of the key and of the value apart`() = runBlocking {
+            startWithConfigs(keyType = KafkaFieldType.SCHEMA_REGISTRY, valueType = KafkaFieldType.SCHEMA_REGISTRY)
+            whenever(mockFetcher.getSchemaIdInfo(any())).thenReturn(
+                SchemaByIdResponse(schema = avroSchemaJson, schemaType = "AVRO")
+            )
+            val rec = record(
+                keyBytes = buildV0Payload(5, encodeAvroPayload(avroSchemaJson, "Key", 1)),
+                valueBytes = buildV0Payload(7, encodeAvroPayload(avroSchemaJson, "Eve", 28))
+            )
+
+            val result = client.convertToConsumerRecord(rec, "test-topic", mockFetcher)
+
+            assertEquals(RecordSchema(id = 5), SchemaIdHeaders.schemaOf(result.headers(), isKey = true))
+            assertEquals(RecordSchema(id = 7), SchemaIdHeaders.schemaOf(result.headers(), isKey = false))
+        }
+
+        @Test
+        fun `should keep the headers of the producer when it notes the schema`() = runBlocking {
+            startWithConfigs(valueType = KafkaFieldType.SCHEMA_REGISTRY)
+            whenever(mockFetcher.getSchemaIdInfo(7)).thenReturn(
+                SchemaByIdResponse(schema = avroSchemaJson, schemaType = "AVRO")
+            )
+            val trace = Base64.getEncoder().encodeToString("t1".toByteArray())
+            val rec = record(
+                headers = listOf(PartitionConsumeRecordHeader("trace", trace)),
+                valueBytes = buildV0Payload(7, encodeAvroPayload(avroSchemaJson, "Eve", 28))
+            )
+
+            val result = client.convertToConsumerRecord(rec, "test-topic", mockFetcher)
+
+            assertEquals(listOf("trace"), SchemaIdHeaders.visible(result.headers()).map { it.key() })
+        }
+
+        @Test
+        fun `should note nothing for a value that does not use the registry`() = runBlocking {
+            startWithConfigs(valueType = KafkaFieldType.BASE64)
+            val rec = record(valueBytes = buildV0Payload(7, byteArrayOf(1, 2, 3)))
+
+            val result = client.convertToConsumerRecord(rec, "test-topic", mockFetcher)
+
+            assertNull(SchemaIdHeaders.schemaOf(result.headers(), isKey = false))
+            assertEquals(0, result.headers().toArray().size)
         }
 
         @Test
