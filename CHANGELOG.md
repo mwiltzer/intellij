@@ -11,6 +11,7 @@ All noteworthy changes to this plugin will be documented in this file.
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
+- The producer can write records with an older version of a schema instead of the latest one: a version list next to the schema list, for Confluent Schema Registries including Confluent Cloud. It offers **Latest** and the versions of the schema, which are looked up when the list is opened, and the choice is saved with the producer. A version that does not exist any more makes producing fail with an error instead of writing another version
 ### Removed
 ### Fixed
 - Deleting a consumer group that the broker rejects (for example, one that still has active members) now shows an error instead of appearing to succeed.

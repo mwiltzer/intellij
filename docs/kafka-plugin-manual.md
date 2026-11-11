@@ -194,6 +194,13 @@ favorite: right-click a topic and select **Add to Favorites**.
       For example, you can use `"${random.integer(1,10)}"` to generate a random integer between 1 and 10.
       <img src="images/kafka_random_value.png" alt="Kafka random keyword" width="500"/>
 
+   With a Confluent Schema Registry, the list next to the schema list sets the version of the schema that the records
+   are written with. It offers **Latest**, which is the default, and the versions of the schema, the newest first.
+   The versions are looked up when you open the list. The choice belongs to the selected schema: another schema starts
+   with its latest version again. It is saved with the producer. If the chosen version no longer exists in the Schema
+   Registry, the producer reports an error and does not write the latest version instead. A consumer needs no such
+   choice, because it reads each record with the schema that the record names.
+
 7. Under **Headers**, provide any custom headers. If you have them in JSON or CSV format, you can paste them into this
    section.
 8. Under **Flow**, you can control the record flow:

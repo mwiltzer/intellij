@@ -189,20 +189,33 @@ class CCloudProducerClient(
         }
     }
 
-    private suspend fun resolveSchemaCache(
+    @VisibleForTesting
+    internal suspend fun resolveSchemaCache(
         fetcher: DataPlaneFetcher,
         vararg fields: ConsumerProducerFieldConfig
     ): Map<String, SchemaVersionResponse> {
         val cache = ConcurrentHashMap<String, SchemaVersionResponse>()
         for (field in fields) {
             if (field.type == KafkaFieldType.SCHEMA_REGISTRY && field.schemaName.isNotEmpty()) {
-                cache.getOrPut(field.schemaName) {
-                    fetcher.getLatestVersionInfo(field.schemaName)
+                cache.getOrPut(schemaCacheKey(field)) {
+                    fetchSchemaVersion(fetcher, field)
                 }
             }
         }
         return cache
     }
+
+    /** The key and the value of a record may be written with different versions of the same schema. */
+    private fun schemaCacheKey(field: ConsumerProducerFieldConfig): String =
+        field.schemaVersion?.let { "${field.schemaName}@$it" } ?: field.schemaName
+
+    /** The version of the schema that the field chose, or the latest one. */
+    private suspend fun fetchSchemaVersion(
+        fetcher: DataPlaneFetcher,
+        field: ConsumerProducerFieldConfig
+    ): SchemaVersionResponse =
+        field.schemaVersion?.let { fetcher.getSchemaVersionInfo(field.schemaName, it) }
+            ?: fetcher.getLatestVersionInfo(field.schemaName)
 
     private suspend fun produceBatch(
         active: AtomicBoolean,
@@ -371,15 +384,15 @@ class CCloudProducerClient(
      *
      * Serialize client-side and prepend the Confluent V0 wire format prefix.
      * The schema ID is looked up from the pre-resolved cache, falling back to a
-     * network call only if the subject is not cached.
+     * network call only if the schema (and its version) is not cached.
      */
     private suspend fun buildSchemaRegistryData(
         fetcher: DataPlaneFetcher,
         field: ConsumerProducerFieldConfig,
         schemaCache: Map<String, SchemaVersionResponse> = emptyMap()
     ): ProduceRecordData {
-        val schemaInfo = schemaCache[field.schemaName]
-            ?: fetcher.getLatestVersionInfo(field.schemaName)
+        val schemaInfo = schemaCache[schemaCacheKey(field)]
+            ?: fetchSchemaVersion(fetcher, field)
         val schemaId = schemaInfo.id
 
         val payloadBytes = when (field.schemaFormat) {

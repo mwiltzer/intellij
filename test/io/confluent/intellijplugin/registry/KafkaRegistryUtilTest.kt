@@ -12,9 +12,12 @@ import io.confluent.intellijplugin.testutil.wireMockExtension
 import io.confluent.kafka.schemaregistry.client.rest.RestService
 import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaReference
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.concurrency.rejectedPromise
+import org.jetbrains.concurrency.resolvedPromise
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
@@ -102,6 +105,75 @@ class KafkaRegistryUtilTest {
 
             assertNotNull(result)
             assertEquals("com.example.User", result?.name())
+        }
+
+        @Test
+        fun `should load the chosen version and not the latest one`() {
+            val chosen = SchemaVersionInfo(
+                schemaName = "User",
+                version = 2,
+                type = KafkaRegistryFormat.AVRO,
+                schema = simpleSchemaJson
+            )
+            val dataManager = mock<BaseClusterDataManager> {
+                on { getSchemaVersionInfo("User", 2L) } doReturn resolvedPromise(chosen)
+                on { parseSchemaForDisplay(chosen) } doReturn
+                    KafkaRegistryUtil.parseSchema(chosen.type, chosen.schema, chosen.references)
+            }
+
+            val result = runBlocking {
+                KafkaRegistryUtil.loadSchema("User", KafkaFieldType.SCHEMA_REGISTRY, dataManager, version = 2)
+            }
+
+            assertEquals("com.example.User", result?.name())
+            runBlocking { verify(dataManager, never()).getLatestVersionInfo(any()) }
+            verify(dataManager).getSchemaVersionInfo("User", 2L)
+        }
+
+        @Test
+        fun `should load the latest version when none is chosen`() {
+            val latest = SchemaVersionInfo(
+                schemaName = "User",
+                version = 5,
+                type = KafkaRegistryFormat.AVRO,
+                schema = simpleSchemaJson
+            )
+            val dataManager = mock<BaseClusterDataManager> {
+                on { runBlocking { getLatestVersionInfo("User") } } doReturn latest
+                on { parseSchemaForDisplay(latest) } doReturn
+                    KafkaRegistryUtil.parseSchema(latest.type, latest.schema, latest.references)
+            }
+
+            val result = runBlocking {
+                KafkaRegistryUtil.loadSchema("User", KafkaFieldType.SCHEMA_REGISTRY, dataManager, version = null)
+            }
+
+            assertNotNull(result)
+            verify(dataManager, never()).getSchemaVersionInfo(any(), any())
+        }
+
+        @Test
+        fun `should fail when the chosen version is not there`() {
+            val dataManager = mock<BaseClusterDataManager> {
+                on { getSchemaVersionInfo("User", 9L) } doReturn rejectedPromise("Version not found")
+            }
+
+            assertThrows(Exception::class.java) {
+                runBlocking {
+                    KafkaRegistryUtil.loadSchema("User", KafkaFieldType.SCHEMA_REGISTRY, dataManager, version = 9)
+                }
+            }
+        }
+
+        @Test
+        fun `should not ask the registry for a version of a field that does not use it`() {
+            val dataManager = mock<BaseClusterDataManager>()
+
+            for (fieldType in KafkaFieldType.defaultValues) {
+                assertNull(runBlocking { KafkaRegistryUtil.loadSchema("User", fieldType, dataManager, version = 2) })
+            }
+
+            verify(dataManager, never()).getSchemaVersionInfo(any(), any())
         }
 
         @Nested

@@ -23,7 +23,10 @@ data class ConsumerProducerFieldConfig(
     val registryType: KafkaRegistryType,
     val schemaName: String,
     val schemaFormat: KafkaRegistryFormat,
-    val parsedSchema: ParsedSchema?
+    val parsedSchema: ParsedSchema?,
+
+    /** The version of the registry schema a producer writes with, [parsedSchema] is the one of that version. `null`: the latest. */
+    val schemaVersion: Long? = null
 ) {
     fun getValueObj() = when (type) {
         KafkaFieldType.STRING -> valueText.ifEmpty { null }

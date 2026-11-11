@@ -24,6 +24,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.TimeoutCancellationException
 import org.jetbrains.concurrency.AsyncPromise
 import org.jetbrains.concurrency.Promise
+import org.jetbrains.concurrency.await
 import java.util.concurrent.CancellationException
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -92,16 +93,24 @@ object KafkaRegistryUtil {
         dataManager: BaseClusterDataManager
     ): KafkaRegistryFormat? = dataManager.getCachedOrLoadSchema(schemaName).type
 
+    /**
+     * The schema of the registry for a field, or `null` if the field type does not use the registry or the registry has
+     * no such schema. A [version] of `null` is the latest one.
+     */
     @RequiresBackgroundThread
     suspend fun loadSchema(
         schemaName: String,
         fieldType: KafkaFieldType,
-        dataManager: BaseClusterDataManager
+        dataManager: BaseClusterDataManager,
+        version: Long? = null
     ): ParsedSchema? {
         if (fieldType !in KafkaFieldType.registryValues)
             return null
 
-        val versionInfo = dataManager.getLatestVersionInfo(schemaName) ?: return null
+        val versionInfo = (
+            if (version == null) dataManager.getLatestVersionInfo(schemaName)
+            else dataManager.getSchemaVersionInfo(schemaName, version).await()
+            ) ?: return null
         return dataManager.parseSchemaForDisplay(versionInfo).getOrThrow()
     }
 

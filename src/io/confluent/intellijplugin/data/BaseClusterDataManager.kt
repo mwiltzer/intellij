@@ -3,6 +3,7 @@ package io.confluent.intellijplugin.data
 import com.intellij.CommonBundle
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -30,6 +31,7 @@ import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -265,6 +267,21 @@ abstract class BaseClusterDataManager(
 
     @RequiresBackgroundThread
     abstract fun getSchemasForEditor(): List<RegistrySchemaInEditor>
+
+    /**
+     * The versions of the schema [schemaName] that the editors offer, the newest first. Costs one registry request.
+     * `null` if the registry could not be asked.
+     */
+    suspend fun getSchemaVersionsForEditor(schemaName: String): List<Long>? = try {
+        listSchemaVersions(schemaName).sortedDescending()
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        thisLogger().warn("Failed to list the versions of schema '$schemaName' for connection $connectionId", e)
+        null
+    }
 
     abstract suspend fun getLatestVersionInfo(schemaName: String): SchemaVersionInfo?
 
