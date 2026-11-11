@@ -8,6 +8,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - Confluent Cloud requests are now retried with exponential backoff and jitter, honoring `Retry-After`: on rate limiting (429) for any request, and on temporary server errors (502/503/504) and connection failures for read requests. If the server asks to wait more than a minute, the request fails right away instead of retrying sooner than asked.
 - Tool window auto-refresh now varies each interval by up to ±20%. While a connection is unreachable, auto-refresh keeps re-checking it, waiting progressively longer (up to about 5 minutes), and resumes the normal interval once the connection recovers. Connections that use an SSH tunnel are not re-checked automatically; use Refresh to reconnect them.
 - Upgrade Apache Kafka client to 4.1.2 (required by the Schema Registry client's OAuth token provider)
+- Listing the topics of a Kafka cluster no longer fetches the configuration of every topic each time to find the virtual topics: it is done once per topic, and later only for topics that are new
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
@@ -25,6 +26,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - Restarting the Confluent Cloud producer right after stopping it no longer lets the stopped run, still finishing its last produce request, stop the new run. While a producer is stopping, its button shows "Stopping..." and is disabled until that request finishes, so a second click no longer starts a new run.
 - Stopping the Confluent Cloud producer while it is waiting out rate limiting (429) now takes effect right away, instead of after the wait (up to about 3 minutes). A produce request already sent still finishes, so its record is reported.
 - Confluent Cloud tokens now refresh well before they expire, at a random point between 70% and 90% of the lifetime stated in each token, instead of a few seconds before. A slow refresh no longer leaves requests going out with an expired token.
+- A topic that you may not describe no longer keeps the virtual topics of the other topics from being detected. That failed the whole batch, which was repeated and logged as a warning every time the topics were listed. Such a topic is treated as a regular topic, and a topic that failed for another reason is tried again at the next listing
 
 ## 253.25910.2
 ### Fixed

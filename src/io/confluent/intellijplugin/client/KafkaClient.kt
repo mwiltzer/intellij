@@ -37,6 +37,7 @@ import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.config.SaslConfigs
 import java.io.File
 import java.util.*
+import java.util.concurrent.ExecutionException
 import kotlin.jvm.optionals.getOrNull
 
 
@@ -53,6 +54,18 @@ class KafkaClient(
     private val kafkaAdminNotNull
         get() = kafkaAdmin ?: error("Kafka Admin Client is not inited")
 
+    private val virtualTopicDetector = VirtualTopicDetector { topicNames ->
+        val resources = topicNames.map { ConfigResource(ConfigResource.Type.TOPIC, it) }
+        // Every topic has its own future, so a topic that may not be described does not fail the others.
+        kafkaAdminNotNull.describeConfigs(resources).values().entries.associate { (resource, future) ->
+            resource.name() to try {
+                Result.success(future.get().entries())
+            } catch (e: ExecutionException) {
+                Result.failure(e.cause ?: e)
+            }
+        }
+    }
+
     var confluentRegistryClient: ConfluentRegistryClient? = null
         private set
 
@@ -68,6 +81,7 @@ class KafkaClient(
 
     override fun connectInner(calledByUser: Boolean) {
         disposeKafkaAdminClient()
+        virtualTopicDetector.clear()
 
         val tunnelData = connectionData.getTunnelData()
         val urls = kafkaProps.getProperty(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG)
@@ -315,30 +329,9 @@ class KafkaClient(
         else
             names.filter { !it.startsWith("_") }
         val topicNames = filteredNames.sorted().filter { !it.endsWith("/") }
-        
-        val virtualTopics = getVirtualTopics(topicNames)
+
+        val virtualTopics = virtualTopicDetector.virtualAmong(topicNames)
         return topicNames.filterNot { virtualTopics.contains(it) }
-    }
-    
-    private fun getVirtualTopics(topicNames: List<String>): Set<String> {
-        if (topicNames.isEmpty()) return emptySet()
-        val resources = topicNames.map { ConfigResource(ConfigResource.Type.TOPIC, it) }
-        val result = mutableSetOf<String>()
-        try {
-            val configs = kafkaAdminNotNull.describeConfigs(resources).all().get()
-            for ((resource, config) in configs) {
-                val isVirtual = config.entries().any { entry ->
-                    (entry.name() == "confluent.topic.type" && entry.value() == "virtual") ||
-                    (entry.name() == "replication.factor" && entry.value() == "0")
-                }
-                if (isVirtual) {
-                    result.add(resource.name())
-                }
-            }
-        } catch (t: Throwable) {
-            logger.warn("Could not batch check for virtual topics", t)
-        }
-        return result
     }
 
     private fun getKafkaProps(connectionData: KafkaConnectionData): Properties {
