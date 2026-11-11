@@ -3,6 +3,8 @@ package io.confluent.intellijplugin.consumer.editor
 import com.intellij.testFramework.junit5.TestApplication
 import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
+import org.apache.avro.Schema
+import org.apache.avro.generic.GenericData
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.internals.RecordHeader
 import org.apache.kafka.common.header.internals.RecordHeaders
@@ -60,8 +62,8 @@ class KafkaRecordTest {
                 KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.UNKNOWN,
                 Result.success(rec)
             )
-            assertEquals("k1", kafkaRecord.key)
-            assertEquals("v1", kafkaRecord.value)
+            assertEquals("k1", kafkaRecord.keyText)
+            assertEquals("v1", kafkaRecord.valueText)
         }
 
         @Test
@@ -158,14 +160,14 @@ class KafkaRecordTest {
         }
 
         @Test
-        fun `should set key and value to null for failed records`() {
+        fun `should set key and value text to null for failed records`() {
             val kafkaRecord = KafkaRecord.createFor(
                 KafkaFieldType.STRING, KafkaFieldType.STRING,
                 KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.UNKNOWN,
                 Result.failure(RuntimeException("fail"))
             )
-            assertNull(kafkaRecord.key)
-            assertNull(kafkaRecord.value)
+            assertNull(kafkaRecord.keyText)
+            assertNull(kafkaRecord.valueText)
         }
 
         @Test
@@ -292,6 +294,42 @@ class KafkaRecordTest {
             )
             // KafkaEditorUtils.getValueAsString returns "" when value is null
             assertEquals("", kafkaRecord.keyText)
+        }
+    }
+
+    @Nested
+    @DisplayName("Retained memory")
+    inner class RetainedMemory {
+
+        @Test
+        fun `should render a deserialized Avro record to text when the record is created`() {
+            val schema = Schema.Parser().parse(
+                """{"type":"record","name":"Person","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}"""
+            )
+            val avro = GenericData.Record(schema).apply {
+                put("name", "Ada")
+                put("age", 36)
+            }
+
+            val kafkaRecord = KafkaRecord.createFor(
+                KafkaFieldType.STRING, KafkaFieldType.SCHEMA_REGISTRY,
+                KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.AVRO,
+                Result.success(consumerRecord(value = avro))
+            )
+
+            val text = kafkaRecord.valueText!!
+            assertTrue(text.contains("\"name\""), text)
+            assertTrue(text.contains("Ada"), text)
+            assertTrue(text.contains("36"), text)
+        }
+
+        @Test
+        fun `should declare no field that could keep the deserialized key or value alive`() {
+            val untypedFields = KafkaRecord::class.java.declaredFields
+                .filter { it.type == Any::class.java }
+                .map { it.name }
+
+            assertEquals(emptyList<String>(), untypedFields)
         }
     }
 }

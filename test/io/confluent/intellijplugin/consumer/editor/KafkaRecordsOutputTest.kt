@@ -73,7 +73,7 @@ class KafkaRecordsOutputTest {
         keyType = KafkaFieldType.STRING,
         valueType = KafkaFieldType.STRING,
         error = RuntimeException("boom"),
-        key = null, value = null,
+        keyText = null, valueText = null,
         topic = "", partition = -1, offset = -1, duration = -1, timestamp = 0L,
         keySize = 0, valueSize = 0,
         headers = emptyList<Property>(),
