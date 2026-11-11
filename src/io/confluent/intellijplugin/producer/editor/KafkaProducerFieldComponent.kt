@@ -227,8 +227,8 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
                 }
                 rowsRange {
                     row(KafkaMessagesBundle.message("settings.format.registry.schema")) {
-                        cell(schemaComboBox).onChanged { schemaValidationError = null }.resizableColumn()
-                            .gap(RightGap.SMALL)
+                        cell(schemaComboBox).onChanged { schemaValidationError = null }.align(AlignX.FILL)
+                            .resizableColumn().gap(RightGap.SMALL)
                         actionButton(
                             DumbAwareAction.create(
                                 KafkaMessagesBundle.message("show.schema.info"),

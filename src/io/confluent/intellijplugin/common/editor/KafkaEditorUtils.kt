@@ -280,6 +280,9 @@ object KafkaEditorUtils {
     ): ComboBox<RegistrySchemaInEditor> {
         val schemaCombobox = ComboBox(arrayOf<RegistrySchemaInEditor>())
         schemaCombobox.isSwingPopup = false
+        // Field is set for limiting combobox width. A combo box is as wide as its widest item, and a registry can hold
+        // thousands of schemas with long names, which pushes the buttons next to it out of the editor.
+        schemaCombobox.prototypeDisplayValue = RegistrySchemaInEditor("Schema sample name")
         schemaCombobox.toolTipText = KafkaMessagesBundle.message("registry.subject.combobox.default.name")
 
         // Names come first and the formats follow, see SchemaComboBoxLoader. Without a registry there is nothing to list.

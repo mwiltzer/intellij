@@ -1,10 +1,14 @@
 package io.confluent.intellijplugin.common.editor
 
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
 import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
+import io.confluent.intellijplugin.common.models.TopicInEditor
+import io.confluent.intellijplugin.data.BaseClusterDataManager
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
+import io.confluent.intellijplugin.registry.KafkaRegistryType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -13,6 +17,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.mock
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -326,6 +332,42 @@ class KafkaEditorUtilsTest {
 
             assertEquals(1, comboBox.selectedIndex)
             assertEquals(2, comboBox.model.size)
+        }
+    }
+
+    @Nested
+    inner class `createSchemaComboBox` {
+
+        private fun withSchemaComboBox(test: (ComboBox<RegistrySchemaInEditor>) -> Unit) {
+            val parent = Disposer.newDisposable("schema combo box test")
+            try {
+                val manager = mock<BaseClusterDataManager> { on { registryType } doReturn KafkaRegistryType.NONE }
+                test(KafkaEditorUtils.createSchemaComboBox(parent, manager, ComboBox(arrayOf<TopicInEditor>()), false))
+            } finally {
+                Disposer.dispose(parent)
+            }
+        }
+
+        @Test
+        fun `should not get wider with a long schema name`() = withSchemaComboBox { comboBox ->
+            val emptyWidth = comboBox.preferredSize.width
+            val emptyMinimum = comboBox.minimumSize.width
+
+            comboBox.addItem(RegistrySchemaInEditor("a".repeat(300), KafkaRegistryFormat.AVRO))
+
+            // The width of a combo box is the one of its widest item, which pushed the buttons next to it out of the editor.
+            assertEquals(emptyWidth, comboBox.preferredSize.width)
+            assertEquals(emptyMinimum, comboBox.minimumSize.width)
+            assertTrue(emptyWidth < 300, "$emptyWidth")
+        }
+
+        @Test
+        fun `should not get wider with many schemas`() = withSchemaComboBox { comboBox ->
+            val emptyWidth = comboBox.preferredSize.width
+
+            (1..2_000).forEach { comboBox.addItem(RegistrySchemaInEditor("com.example.events.SomeEvent$it.v1-value")) }
+
+            assertEquals(emptyWidth, comboBox.preferredSize.width)
         }
     }
 }
