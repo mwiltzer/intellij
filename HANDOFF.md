@@ -13,6 +13,9 @@ it, never merge it, and never base new work on it.**
 - The improvements were developed as one bundle, which is kept as `backup/all-optimizations`. That bundle was split
   into **21 branches with one commit each** on top of `oauth-4-schem-reg`, so that each improvement can be its own pull
   request. All branches are pushed to `origin`. No pull request exists yet.
+- One more branch, `fork/idea-2026.3-charts` (F1), is for the fork only and never goes upstream: it makes the built
+  plugin load in IntelliJ IDEA 2026.3, which upstream #675 broke (see "Facts"). The backup contains it, so a build from
+  this branch requires IDEA 2026.3.
 - Every branch passes the full test suite on its own. Merging all of them gives exactly the backup, apart from the two
   intended differences listed below; the backup passes all 2,947 tests and `buildPlugin`.
 - **Decided on 2026-11-11: upstream first, the fork as fallback.** The pull requests go to `confluentinc/intellij`;
@@ -38,12 +41,13 @@ it, never merge it, and never base new work on it.**
 
 ```
 main
-└── oauth-4-schem-reg                                  O
-    ├── L1 L3 L4 L5 L6 L7 L8 L11 L12 L13               independent, one commit each
-    ├── L2 ── L9
-    └── S0 ── S1 ── S2 ── S3 ── S4 ── S5 ── S6         stack, one commit each
-              ├── L10
-              └── L14
+├── oauth-4-schem-reg                                  O
+│   ├── L1 L3 L4 L5 L6 L7 L8 L11 L12 L13               independent, one commit each
+│   ├── L2 ── L9
+│   └── S0 ── S1 ── S2 ── S3 ── S4 ── S5 ── S6         stack, one commit each
+│             ├── L10
+│             └── L14
+└── F1                                                 fork only, never a pull request
 ```
 
 | ID  | Branch                                 | Based on | Commit     | What it does                                                                                                                                                                                                                                                  | Tests        |
@@ -70,7 +74,8 @@ main
 | S6  | `perf/editor-topic-schema-lookup`      | S5       | `11bdaee3` | Editors find the topic's schema by prefix without waiting for the full listing; names kept 5 minutes where prefix listing works; logs of the UI-thread wait and of the selection reason                                                                       | 2,570        |
 | L10 | `fix/schema-combo-width`               | S1       | `b60aa6c2` | Long schema names no longer push the buttons next to the schema list out of view                                                                                                                                                                              | 2,196        |
 | L14 | `feat/record-schema-id`                | S1       | `291f10ca` | The details of a consumed record show the schema ID and the subjects and versions it is registered as (called C3 in the session notes)                                                                                                                        | 2,314        |
-| –   | `backup/all-optimizations`             | O        | `7ac9bb9d` | The whole bundle as one WIP commit: the target state and the reference for resolving conflicts. Never merge it.                                                                                                                                              | 2,947        |
+| F1  | `fork/idea-2026.3-charts`              | `main`   | `d1c91898` | Fork only, never a pull request: the built plugin requires `intellij.charts.shared` instead of `intellij.charts`, so that it loads in IntelliJ IDEA 2026.3 (broken by upstream #675). Compiling and the tests stay on 2026.1                                  | 1,949        |
+| –   | `backup/all-optimizations`             | O        | `b1a72776` | The whole bundle as one WIP commit: the target state and the reference for resolving conflicts. Never merge it.                                                                                                                                              | 2,947        |
 | –   | `handoff/pr-split`                     | backup   | –          | The backup plus this note. Never merge it.                                                                                                                                                                                                                   | –            |
 
 The backup, which is all of them together: **2,947 tests, 0 failures, 2 known skips, `buildPlugin` OK.** Every branch
@@ -97,6 +102,15 @@ in the fork. The fork is set up so that this needs no switch later:
   from CSV, #658 stops the Confluent Cloud token refresh on terminal errors. They change Confluent Cloud sign-in code,
   `TelemetryEvent.kt` and `plugin.xml`, none of our files apart from `CHANGELOG.md`, and no code that our branches
   use. The fork's `main` and all branches were moved onto it as described in "Keeping up with upstream" below.
+- **#675 breaks IntelliJ IDEA 2026.3** (released 2026-11-05, build 263.7307.200, which the user runs). It makes the
+  module `intellij.charts` a required dependency in `plugin.xml`. In 2026.1, the build target, that module is a product
+  module in `lib/intellij.charts.jar`, on the core class path; that is why installed builds never needed the
+  declaration and only `runIde` failed (#469). 2026.3 has no such module: the same classes are in
+  `intellij.charts.shared`, a content module (`visibility="public"`) of the bundled Charts plugin
+  `com.intellij.platform.charts`. So 2026.3 does not load the plugin at all: "Plugin 'Confluent' cannot load because
+  required module 'intellij.charts' is not available". The plugin declares no until-build (the build sets since-build
+  to 261.22158), so upstream's next release will fail the same way for every 2026.3 user. Not reported upstream yet;
+  it is a small, useful first issue for the user to post. F1 works around it in the fork only.
 - 13 files that upstream changed since then are changed by our branches too: `CHANGELOG.md`,
   `KafkaBundle.properties`, `ccloud/fetcher/DataPlaneFetcher.kt`, `DataPlaneFetcherImpl.kt` (+ test),
   `client/KafkaClient.kt`, `consumer/client/CCloudConsumerClient.kt` (+ test), `data/CCloudClusterDataManager.kt`,
@@ -155,7 +169,9 @@ Cautions:
 - Before step 4 the user checks that their employer or client agrees to contributing this code.
 - Own builds: `./gradlew buildPlugin`, then Settings → Plugins → Install Plugin from Disk. Turn off automatic plugin
   updates, or skip the update of this plugin, otherwise the next Confluent release replaces the build. Never publish it
-  under Confluent's plugin ID or name.
+  under Confluent's plugin ID or name. A build that contains F1 (the backup, `handoff/pr-split`, `integration`) loads
+  only in IDEs with the module `intellij.charts.shared`, such as 2026.3; `runIde`, which starts 2026.1, does not load
+  it. Builds of the other branches load in 2026.1 and not in 2026.3.
 
 ### Keeping up with upstream
 
@@ -168,13 +184,15 @@ took about an hour, most of it tests:
 2. Check that every local branch equals its `origin/` copy. Then the `origin/` refs keep the heads from before the
    rebase; the rebase commands, the checks and the lease use them, so no backup tags are needed.
 3. In a separate worktree, with `CHANGELOG.md merge=union` in `.git/info/attributes`: rebase O with
-   `git rebase --onto upstream/main origin/main oauth-4-schem-reg`, every other branch with
+   `git rebase --onto upstream/main origin/main oauth-4-schem-reg`, F1 the same way, every other branch with
    `git rebase --onto <parent> origin/<parent> <branch>`, the stack with `--update-refs` up to S6, then the backup and
    `handoff/pr-split`. Resolve code conflicts as in step 2 above. Delete the union line afterwards.
 4. Check: the Unreleased section of every `CHANGELOG.md` has each `### …` header once and no line twice; every commit
    adds and removes the same lines as its `origin/` copy; the merge of all branches equals the backup apart from the
    intended differences (see Verification).
 5. Run the full suite for upstream `main` and for every branch, one after the other, and `buildPlugin` for the backup.
+   `buildPlugin` fails on purpose with "requires neither …" once upstream changes the charts dependency in
+   `plugin.xml`: then check whether upstream supports 2026.3 itself and drop F1 (also from the backup), or adapt it.
 6. Ask, then push in one `git push --atomic`: `main` as a fast-forward (`upstream/main:main`), the branches with
    `--force-with-lease`, which checks them against the `origin/` refs. Update the commit IDs, test counts and facts in
    this note.
@@ -195,6 +213,8 @@ branches again and never take a file from an older backup: it would drop the ups
 3. The stack S0 → S1 → … → S6, then L10.
 4. Branches that collide with the stack: L4, L13, L11.
 5. L14 last.
+6. F1, anywhere: it changes only a block of `build.gradle.kts` that no other branch touches. It is part of the fork's
+   `integration`, never of a pull request.
 
 Why: in this order the stack, the biggest part, goes in unchanged, and every code conflict comes up in a small
 single-commit branch. L14 goes last because it collides with the most branches; at that point every other branch that
@@ -327,6 +347,17 @@ Known limitations:
 
 ## Technical knowledge
 
+- **Building against IntelliJ IDEA 2026.3** (tried on 2026-11-11, not done): the IntelliJ Platform Gradle Plugin can
+  read 2026.3 from version 2.12.0 on (the `namespace` attribute of module descriptors), and 2.12.0 and later require
+  Gradle 9. Gradle 9 removed `Project.exec`, which `openApiGenerate` uses (`providers.exec { … }.result.get()` replaces
+  it). For 2026.3 the Gradle plugin (2.14 and later) sets the Java toolchain to 25, the JetBrains Runtime of 2026.3, and
+  the project's Kotlin Gradle plugin then fails with "Unknown Kotlin JVM target: 25"; a newer Kotlin, or an explicit
+  toolchain 21, comes next. So targeting 2026.3 is a migration of its own; F1 avoids it. The chart API that the plugin
+  calls (25 members of `DataFrame`, `DataFrameCSVAdapter`, `Column`, `Type` and the column types) has the same
+  signatures in 2026.1's `intellij.charts` and 2026.3's `intellij.charts.shared` (checked with `javap`).
+- **Tests read the processed `plugin.xml`.** The tests use `build/resources/main/META-INF/plugin.xml`, which
+  `patchPluginXml` also writes. With a required module that the test IDE (2026.1) lacks, the plugin is not loaded in
+  the tests and 28 of them fail. That is why F1 patches the jar in the sandbox (`prepareSandbox`) instead.
 - **Kafka clients 4.1.2 and the class loader.** The Schema Registry client's OAuth token provider needs Kafka 4.1.
   Kafka's `ConfigDef` resolves the default of `sasl.oauthbearer.jwt.retriever.class` (`DefaultJwtRetriever`) with the
   thread's context class loader. On the UI thread that loader does not see the plugin's classes, so `ConsumerConfig`
@@ -392,6 +423,7 @@ version of a file is the exact resolution.
 
 | File                                                    | Branches                                     |
 |---------------------------------------------------------|----------------------------------------------|
+| `build.gradle.kts`                                      | L1, F1                                       |
 | `client/KafkaClient.kt`                                 | O, L4, L12, S0, S3                           |
 | `common/editor/KafkaEditorUtils.kt`                     | S1, S6, L10 (its test: S1, L10)              |
 | `common/editor/SchemaComboBoxLoader.kt` (+ test)        | S1, S4, S6                                   |
