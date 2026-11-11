@@ -18,6 +18,7 @@ import io.confluent.intellijplugin.core.util.BdIdeRegistryUtil
 import io.confluent.intellijplugin.core.util.withPluginClassLoader
 import io.confluent.intellijplugin.model.*
 import io.confluent.intellijplugin.registry.KafkaRegistryType
+import io.confluent.intellijplugin.registry.common.RegistryConnectionFailure
 import io.confluent.intellijplugin.registry.confluent.ConfluentRegistryClient
 import io.confluent.intellijplugin.registry.confluent.SchemaRegistryOAuthUrls
 import io.confluent.intellijplugin.registry.glue.BdtGlueRegistryClient
@@ -410,7 +411,7 @@ class KafkaClient(
             confluentRegistryClient?.checkConnection()
             glueRegistryClient?.checkConnection()
         } catch (t: Throwable) {
-            throw BdtConnectionException(KafkaMessagesBundle.message("connection.kafka.registry.is.not.available"), t)
+            throw BdtConnectionException(RegistryConnectionFailure.describe(t), t)
         }
     }
 

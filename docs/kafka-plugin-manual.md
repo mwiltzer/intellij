@@ -297,8 +297,10 @@ plugin integrates with Schema Registry and supports Avro, Protobuf, and JSON sch
         * **Configuration source**: select the way to provide connection parameters:
             * **Custom**: select the authentication method and provide credentials. Credentials are saved in the IDE
               password storage. If you want to use SSL settings different from those of the Kafka Broker, clear the
-              **Use broker SSL settings** checkbox and provide the path for the truststore. The same SSL settings are
-              used to connect to the OAuth token endpoint. The following authentication methods are available:
+              **Use broker SSL settings** checkbox and provide the path for the truststore. A truststore replaces the
+              default trust store, so it must contain the CA certificate of the Schema Registry and, if you use OAuth
+              2.0, of the token endpoint: the same SSL settings are used to connect to both. The following
+              authentication methods are available:
                 * **None**: connect without authentication.
                 * **Basic Auth**: enter a username and a password.
                 * **Bearer**: enter a static bearer token.
