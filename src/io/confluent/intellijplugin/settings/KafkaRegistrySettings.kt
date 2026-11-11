@@ -434,7 +434,7 @@ class KafkaRegistrySettings(
             awsSecretKey,
             glueRegistryName,
             useBrokerSslCheckbox
-        )
+        ) + confluentOAuthComponent.validatedFields
 
     private fun onRegistryTypeChanged() {
         when (registryType.getValue()) {

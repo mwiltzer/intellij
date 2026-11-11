@@ -4,8 +4,13 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
+import io.confluent.intellijplugin.core.settings.isValidateable
+import io.confluent.intellijplugin.core.settings.labelToName
+import io.confluent.intellijplugin.registry.KafkaRegistryType
+import io.confluent.intellijplugin.rfs.KafkaConfigurationSource
 import io.confluent.intellijplugin.rfs.KafkaConnectionData
 import io.confluent.intellijplugin.rfs.SchemaRegistryAuthType
+import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClientConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +98,110 @@ class KafkaSettingsCustomizerTest {
                 ),
                 properties.filterKeys { it.startsWith("bearer.auth.") }
             )
+        }
+    }
+
+    @Nested
+    @DisplayName("Schema Registry OAuth validation before the connection test")
+    inner class RegistryOAuthValidation {
+
+        private val tokenEndpointLabel = labelOf("kafka.oauth.token.endpoint")
+        private val clientIdLabel = labelOf("kafka.oauth.client.id")
+        private val clientSecretLabel = labelOf("kafka.oauth.client.secret")
+        private val notEmpty = KafkaMessagesBundle.message("validator.notEmpty")
+
+        @BeforeEach
+        fun useConfluentRegistryWithOAuth() {
+            val connectionData = KafkaConnectionData().apply { registryType = KafkaRegistryType.CONFLUENT }
+            onEdt {
+                customizer = KafkaSettingsCustomizer(project, connectionData, disposable, coroutineScope)
+                customizer.getDefaultComponent(customizer.getDefaultFields(), connectionData)
+            }
+            awaitCredentialsLoaded()
+            selectAuthentication(SchemaRegistryAuthType.OAUTH)
+        }
+
+        private fun labelOf(key: String) = labelToName(KafkaMessagesBundle.message(key))
+
+        private fun selectAuthentication(type: SchemaRegistryAuthType) =
+            onEdt { customizer.registryConfluentAuth.selectedItem = type }
+
+        private fun fillOAuthFields(tokenEndpoint: String = "https://login.example.com/oauth/token") = onEdt {
+            customizer.registryConfluentOAuthTokenEndpointUrl.component.text = tokenEndpoint
+            customizer.registryConfluentOAuthClientId.component.text = "client-id"
+            customizer.registryConfluentOAuthClientSecret.component.text = "client-secret"
+        }
+
+        // The validation that TestConnectionPanelWrapper runs on all the fields before it tests the connection.
+        private fun oauthErrorsBeforeTestingConnection(): List<Pair<String, String>> = onEdt {
+            customizer.getDefaultFields().flatMap { field ->
+                if (!isValidateable(field.getComponent())) return@flatMap emptyList()
+                field.getValidators().mapNotNull { validator ->
+                    validator.enableValidation()
+                    validator.revalidate()
+                    validator.validationInfo?.takeIf { !it.warning }?.let { field.key.label to it.message }
+                }
+            }
+        }.filter { (label, _) -> label in setOf(tokenEndpointLabel, clientIdLabel, clientSecretLabel) }
+
+        @Test
+        fun `should name the OAuth fields that are missing`() {
+            assertEquals(
+                listOf(tokenEndpointLabel to notEmpty, clientIdLabel to notEmpty, clientSecretLabel to notEmpty),
+                oauthErrorsBeforeTestingConnection()
+            )
+        }
+
+        @Test
+        fun `should name a token endpoint that is not a url`() {
+            fillOAuthFields(tokenEndpoint = "not a url")
+
+            assertEquals(
+                listOf(tokenEndpointLabel to KafkaMessagesBundle.message("kafka.oauth.token.endpoint.invalid")),
+                oauthErrorsBeforeTestingConnection()
+            )
+        }
+
+        @Test
+        fun `should pass complete OAuth settings`() {
+            fillOAuthFields()
+
+            assertEquals(emptyList<Pair<String, String>>(), oauthErrorsBeforeTestingConnection())
+        }
+
+        @Test
+        fun `should include the OAuth fields in the errors that stop the connection test`() {
+            oauthErrorsBeforeTestingConnection()
+
+            val components = setOf(
+                customizer.registryConfluentOAuthTokenEndpointUrl.component,
+                customizer.registryConfluentOAuthClientId.component,
+                customizer.registryConfluentOAuthClientSecret.component,
+            )
+
+            val failing = onEdt { customizer.getValidationErrors() }.mapNotNull { it.component }.filter { it in components }
+            assertEquals(components, failing.toSet())
+        }
+
+        @Test
+        fun `should not validate the OAuth fields for another authentication`() {
+            selectAuthentication(SchemaRegistryAuthType.BASIC_AUTH)
+
+            assertEquals(emptyList<Pair<String, String>>(), oauthErrorsBeforeTestingConnection())
+        }
+
+        @Test
+        fun `should not validate the OAuth fields when the properties are edited directly`() {
+            onEdt { customizer.registryConfluentSource.setValue(KafkaConfigurationSource.FROM_PROPERTIES) }
+
+            assertEquals(emptyList<Pair<String, String>>(), oauthErrorsBeforeTestingConnection())
+        }
+
+        @Test
+        fun `should not validate the OAuth fields for another kind of registry`() {
+            onEdt { customizer.registryType.setValue(KafkaRegistryType.AWS_GLUE) }
+
+            assertEquals(emptyList<Pair<String, String>>(), oauthErrorsBeforeTestingConnection())
         }
     }
 }

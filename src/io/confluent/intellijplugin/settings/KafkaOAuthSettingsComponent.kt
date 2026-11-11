@@ -4,10 +4,14 @@ import com.intellij.openapi.Disposable
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.*
+import io.confluent.intellijplugin.core.settings.fields.WrappedComponent
+import io.confluent.intellijplugin.core.settings.labelToName
 import io.confluent.intellijplugin.core.settings.withNonEmptyValidator
 import io.confluent.intellijplugin.core.settings.withValidator
+import io.confluent.intellijplugin.rfs.KafkaConnectionData
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import java.net.URI
+import javax.swing.JComponent
 
 class KafkaOAuthSettingsComponent(private val uiDisposable: Disposable, private val onUpdate: () -> Unit) {
     internal lateinit var tokenEndpointUrl: Cell<JBTextField>
@@ -16,6 +20,13 @@ class KafkaOAuthSettingsComponent(private val uiDisposable: Disposable, private 
     internal lateinit var scope: Cell<JBTextField>
     internal lateinit var logicalCluster: Cell<JBTextField>
     internal lateinit var identityPoolId: Cell<JBTextField>
+
+    /** The fields that must be filled in for the connection to work, for the validation before it is tested. */
+    internal val validatedFields: List<WrappedComponent<KafkaConnectionData>> = listOf(
+        validatedField("kafka.oauth.token.endpoint") { tokenEndpointUrl.component },
+        validatedField("kafka.oauth.client.id") { clientId.component },
+        validatedField("kafka.oauth.client.secret") { clientSecret.component },
+    )
 
     fun create(panel: Panel) = panel.rowsRange {
         row(KafkaMessagesBundle.message("kafka.oauth.token.endpoint")) {
@@ -66,6 +77,9 @@ class KafkaOAuthSettingsComponent(private val uiDisposable: Disposable, private 
         logicalCluster = logicalCluster.component.text,
         identityPoolId = identityPoolId.component.text,
     )
+
+    private fun validatedField(labelKey: String, component: () -> JComponent) =
+        ComponentValidationField(labelToName(KafkaMessagesBundle.message(labelKey)), component)
 
     private fun validateTokenEndpoint(text: String): String? {
         if (text.isBlank()) return KafkaMessagesBundle.message("validator.notEmpty")
