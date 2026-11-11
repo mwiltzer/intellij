@@ -578,4 +578,181 @@ class SchemaFormatResolverTest {
             assertTrue(withTimeout(5_000) { waiting.await() }.exceptionOrNull() is CancellationException)
         }
     }
+
+    @Nested
+    inner class `known details` {
+
+        private val now = AtomicLong(1_000)
+
+        private fun resolver(registry: FakeRegistry, infoTtlMillis: Long = 300_000) =
+            SchemaFormatResolver(4, scope, 60_000, now::get, infoTtlMillis) { registry.load(it) }
+
+        @Test
+        fun `knownInfo should tell nothing about schemas it has not loaded`() {
+            assertNull(resolver(FakeRegistry()).knownInfo("a-value"))
+        }
+
+        @Test
+        fun `should know the details a load brought`() = runBlocking<Unit> {
+            val resolver = resolver(FakeRegistry(avro("a-value")))
+
+            resolver.formatOf("a-value")
+
+            assertEquals(KafkaSchemaInfo("a-value", KafkaRegistryFormat.AVRO, 1), resolver.knownInfo("a-value"))
+        }
+
+        @Test
+        fun `should know the details a refresh brought`() = runBlocking<Unit> {
+            val resolver = resolver(FakeRegistry(avro("a-value", "b-value")))
+
+            resolver.refreshAll(listOf("a-value", "b-value"))
+
+            assertEquals(KafkaRegistryFormat.AVRO, resolver.knownInfo("a-value")?.type)
+            assertEquals(KafkaRegistryFormat.AVRO, resolver.knownInfo("b-value")?.type)
+        }
+
+        @Test
+        fun `should not know details of a schema that has none`() = runBlocking<Unit> {
+            val resolver = resolver(FakeRegistry())
+
+            resolver.formatOf("unreadable-value")
+
+            assertNull(resolver.knownInfo("unreadable-value"))
+        }
+
+        @Test
+        fun `should forget the details after the time to keep them`() = runBlocking<Unit> {
+            val resolver = resolver(FakeRegistry(avro("a-value")), infoTtlMillis = 1_000)
+            resolver.formatOf("a-value")
+
+            now.addAndGet(999)
+            assertEquals(KafkaRegistryFormat.AVRO, resolver.knownInfo("a-value")?.type)
+
+            now.addAndGet(1)
+            assertNull(resolver.knownInfo("a-value"))
+            // The format does not change with the version, so it is still known.
+            assertEquals(KafkaRegistryFormat.AVRO, resolver.known("a-value"))
+        }
+
+        @Test
+        fun `put, remove and clear should forget the details`() = runBlocking<Unit> {
+            val resolver = resolver(FakeRegistry(avro("a-value", "b-value", "c-value")))
+            resolver.refreshAll(listOf("a-value", "b-value", "c-value"))
+
+            resolver.put("a-value", KafkaRegistryFormat.AVRO)
+            resolver.remove("b-value")
+            assertNull(resolver.knownInfo("a-value"))
+            assertNull(resolver.knownInfo("b-value"))
+            assertEquals(KafkaRegistryFormat.AVRO, resolver.knownInfo("c-value")?.type)
+
+            resolver.clear()
+            assertNull(resolver.knownInfo("c-value"))
+        }
+
+        @Test
+        fun `detailsOf should load the details that are not known and keep those that are`() = runBlocking<Unit> {
+            val registry = FakeRegistry(avro("a-value", "b-value", "c-value"))
+            val resolver = resolver(registry)
+            resolver.formatOf("a-value")
+            registry.requested.clear()
+
+            val details = resolver.detailsOf(listOf("a-value", "b-value", "c-value"))
+
+            assertEquals(setOf("a-value", "b-value", "c-value"), details.keys)
+            assertTrue(details.values.all { it.type == KafkaRegistryFormat.AVRO && it.version == 1L })
+            assertEquals(listOf("b-value", "c-value"), registry.requested.toList().sorted())
+        }
+
+        @Test
+        fun `detailsOf should not ask again for what it loaded`() = runBlocking<Unit> {
+            val registry = FakeRegistry(avro("a-value", "b-value"))
+            val resolver = resolver(registry)
+
+            resolver.detailsOf(listOf("a-value", "b-value"))
+            resolver.detailsOf(listOf("b-value", "a-value"))
+
+            assertEquals(listOf("a-value", "b-value"), registry.requested.toList().sorted())
+        }
+
+        @Test
+        fun `detailsOf should ask again for details that are too old`() = runBlocking<Unit> {
+            val registry = FakeRegistry(avro("a-value"))
+            val resolver = resolver(registry, infoTtlMillis = 1_000)
+            resolver.detailsOf(listOf("a-value"))
+
+            now.addAndGet(1_000)
+            resolver.detailsOf(listOf("a-value"))
+
+            assertEquals(2, registry.requested.size)
+        }
+
+        @Test
+        fun `detailsOf should count a name once`() = runBlocking<Unit> {
+            val registry = FakeRegistry(avro("a-value"))
+
+            val details = resolver(registry).detailsOf(listOf("a-value", "a-value"))
+
+            assertEquals(1, details.size)
+            assertEquals(1, registry.requested.size)
+        }
+
+        @Test
+        fun `detailsOf should answer a schema without details with an empty one and not ask again for a while`() =
+            runBlocking<Unit> {
+                val registry = FakeRegistry()
+                val resolver = resolver(registry)
+
+                val first = resolver.detailsOf(listOf("unreadable-value"))
+                val second = resolver.detailsOf(listOf("unreadable-value"))
+
+                assertEquals(KafkaSchemaInfo.createEmpty("unreadable-value"), first["unreadable-value"])
+                assertEquals(KafkaSchemaInfo.createEmpty("unreadable-value"), second["unreadable-value"])
+                assertEquals(1, registry.requested.size)
+
+                now.addAndGet(60_000)
+                resolver.detailsOf(listOf("unreadable-value"))
+                assertEquals(2, registry.requested.size)
+            }
+
+        @Test
+        fun `detailsOf should leave out a schema whose request failed, and answer it empty for the next minute`() =
+            runBlocking<Unit> {
+                val registry = FakeRegistry(avro("bad-value", "good-value"), failing = setOf("bad-value"))
+                val resolver = resolver(registry)
+
+                val first = resolver.detailsOf(listOf("bad-value", "good-value"))
+                val second = resolver.detailsOf(listOf("bad-value", "good-value"))
+
+                assertEquals(setOf("good-value"), first.keys)
+                assertEquals(KafkaSchemaInfo.createEmpty("bad-value"), second["bad-value"])
+                assertEquals(listOf("bad-value", "good-value"), registry.requested.toList().sorted())
+            }
+
+        @Test
+        fun `detailsOf should load a few schemas at a time`() = runBlocking<Unit> {
+            val registry = FakeRegistry(avro(*names(20).toTypedArray()), latencyMs = 10)
+            val resolver = SchemaFormatResolver(3, scope) { registry.load(it) }
+
+            resolver.detailsOf(names(20))
+
+            assertEquals(20, registry.requested.size)
+            assertTrue(registry.maxConcurrentRequests.get() <= 3, "at most 3 at once, was ${registry.maxConcurrentRequests}")
+        }
+
+        @Test
+        fun `detailsOf should share the request with somebody who asks for the same schema`() = runBlocking<Unit> {
+            val registry = FakeRegistry(avro("a-value"))
+            val gate = registry.hold("a-value")
+            val resolver = resolver(registry)
+
+            val byName = async(Dispatchers.Default) { resolver.formatOf("a-value") }
+            withTimeout(5_000) { while (registry.requested.isEmpty()) delay(5) }
+            val details = async(Dispatchers.Default) { resolver.detailsOf(listOf("a-value")) }
+            gate.complete(Unit)
+
+            assertEquals(KafkaRegistryFormat.AVRO, withTimeout(5_000) { byName.await() })
+            assertEquals(setOf("a-value"), withTimeout(5_000) { details.await() }.keys)
+            assertEquals(1, registry.requested.size)
+        }
+    }
 }

@@ -67,15 +67,27 @@ abstract class BaseClusterDataManager(
         SchemaFormatResolver(scope = schemaScope) { loadSchemaDetails(it) }
     }
 
-    // The names of all the schemas, shared by the editors. Changes through the plugin invalidate them sooner than they
-    // expire, and what is older is still shown by the editors while the registry is asked again, see
-    // getCachedSchemaNames.
-    private val schemaNames: ExpiringSingleFlight<List<String>> by lazy {
+    // What the registry lists, shared by the tool window and the editors. Changes through the plugin and refreshes of
+    // the tool window invalidate it sooner than it expires, and what is older is still shown by the editors while the
+    // registry is asked again, see getCachedSchemaNames.
+    private val schemaListing: ExpiringSingleFlight<SchemaListing> by lazy {
         ExpiringSingleFlight(schemaScope, SCHEMA_NAMES_TTL_MS) {
             thisLogger().timed("Listing the schema names of connection $connectionId") {
-                listSchemasNames(limit = null, filter = null).first.map { it.name }.sortedBy { it.lowercase() }
+                SchemaListing(listSchemasNames().sortedBy { it.name.lowercase() })
             }
         }
+    }
+
+    // The list of the tool window, which follows its settings without listing the registry again.
+    private val schemaList: SchemaRegistryList by lazy {
+        SchemaRegistryList(
+            scope = schemaScope,
+            resolver = schemaFormats,
+            cachedListing = schemaListing::peek,
+            settings = ::currentSchemaListSettings,
+            model = { schemaRegistryModel },
+            refreshFromRegistry = { schemaRegistryModel?.let { updater.invokeRefreshModel(it) } }
+        )
     }
 
     /**
@@ -132,10 +144,12 @@ abstract class BaseClusterDataManager(
 
     protected abstract suspend fun listConsumerGroupOffsets(consumerGroup: String): List<ConsumerGroupOffsetInfo>
 
-    protected abstract suspend fun listSchemasNames(
-        limit: Int?,
-        filter: String?
-    ): Pair<List<KafkaSchemaInfo>, Boolean>
+    /**
+     * All the schemas the registry lists, as far as its listing tells about them: at least the names. The filter,
+     * limit and favorites of the tool window are not applied here, see [SchemaRegistryList], so what is listed does
+     * not depend on them.
+     */
+    protected abstract suspend fun listSchemasNames(): List<KafkaSchemaInfo>
 
     protected abstract suspend fun updateSchemaList(
         schemas: List<KafkaSchemaInfo>
@@ -286,7 +300,12 @@ abstract class BaseClusterDataManager(
 
     fun getSchemaByName(name: String) = getCachedSchema(name)
 
-    fun schemaExists(name: String) = getCachedSchema(name) != null
+    /**
+     * Whether the registry has the schema [name], as far as that is known without asking it. Also true for schemas
+     * that the list of the tool window leaves out, because of its filter or its limit.
+     */
+    fun schemaExists(name: String): Boolean =
+        schemaListing.peek()?.contains(name) ?: (getCachedSchema(name) != null)
 
     open fun initRefreshSchemasIfRequired() {
         val schemaModel = schemaRegistryModel
@@ -304,7 +323,7 @@ abstract class BaseClusterDataManager(
      * `null` if the registry could not be asked.
      */
     override suspend fun getSchemaNamesForEditor(): List<String>? = try {
-        schemaNames.get()
+        schemaListing.get().names
     } catch (e: ProcessCanceledException) {
         throw e
     } catch (e: CancellationException) {
@@ -314,7 +333,7 @@ abstract class BaseClusterDataManager(
         null
     }
 
-    override fun getCachedSchemaNames(): List<String>? = schemaNames.peek()
+    override fun getCachedSchemaNames(): List<String>? = schemaListing.peek()?.names
 
     override fun getKnownSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.known(name)
 
@@ -331,8 +350,19 @@ abstract class BaseClusterDataManager(
 
     /** The schemas of the registry changed: the editors must not keep offering the names they got before. */
     protected fun invalidateSchemaNames() {
-        schemaNames.invalidate()
+        schemaListing.invalidate()
     }
+
+    /**
+     * Shows the schemas of the tool window as the filter, limit and favorites say now. The registry is not asked for
+     * them again, they come from the listing that was loaded last. A refresh of the model lists the registry anew.
+     */
+    fun refilterSchemas() = schemaList.refilter()
+
+    private fun currentSchemaListSettings(): SchemaListSettings = SchemaListSettingsReader.read(
+        toolWindow = KafkaToolWindowSettings.getInstance(),
+        config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId())
+    )
 
     abstract suspend fun getLatestVersionInfo(schemaName: String): SchemaVersionInfo?
 
@@ -361,23 +391,8 @@ abstract class BaseClusterDataManager(
             config.schemasPined -= schemaName
         }
 
-        driver.coroutineScope.launch(Dispatchers.Default) {
-            schemaRegistryModel?.let { model ->
-                val currentSchemas = model.data ?: emptyList()
-                val updatedSchemas = currentSchemas.map { schema ->
-                    if (schema.name == schemaName) {
-                        schema.copy(isFavorite = isForAdding)
-                    } else {
-                        schema
-                    }
-                }.sortedWith(
-                    compareByDescending<KafkaSchemaInfo> { it.isFavorite }
-                        .thenBy { it.name.lowercase() }
-                )
-
-                model.setData(updatedSchemas)
-            }
-        }
+        // Pinned schemas come first, and with favorites only the list is made of them.
+        refilterSchemas()
     }
 
     protected fun applyTopicFilters(
@@ -417,17 +432,6 @@ abstract class BaseClusterDataManager(
         groups: List<ConsumerGroupPresentable>,
         limit: Int?
     ) = ClusterDataFilters.applyConsumerGroupLimit(groups, limit)
-
-    protected fun applySchemaFilters(
-        schemas: List<KafkaSchemaInfo>,
-        filterName: String?
-    ) = ClusterDataFilters.applySchemaFilters(schemas, filterName)
-
-    protected fun sortSchemasWithFavorites(
-        schemas: List<KafkaSchemaInfo>,
-        pinnedSchemas: Set<String>,
-        showFavoriteOnly: Boolean
-    ) = ClusterDataFilters.sortSchemasWithFavorites(schemas, pinnedSchemas, showFavoriteOnly)
 
     private fun createTopicsDataModel() = ObjectDataModel(
         idFieldName = TopicPresentable::name,
@@ -532,31 +536,22 @@ abstract class BaseClusterDataManager(
                 val basicSchemas = model.data ?: emptyList()
                 catchFailures(onFailure = { t ->
                     thisLogger().warn("Failed to update schema list for connection $connectionId", t)
-                    basicSchemas.map { it.copy(type = null, version = null) } to t
+                    schemaList.mergeLoaded(model, basicSchemas.map { it.copy(type = null, version = null) }) to t
                 }) {
-                    runBlockingMaybeCancellable {
+                    val (detailed, error) = runBlockingMaybeCancellable {
                         updateSchemaList(basicSchemas)
                     }
+                    // The filter may have changed while the details were loaded, so they go into the list as it is now.
+                    schemaList.mergeLoaded(model, detailed) to error
                 }
             }
-        ) {
-            val toolWindowSettings = KafkaToolWindowSettings.getInstance()
-            val config = toolWindowSettings.getOrCreateConfig(connectionId)
-
-            val (rawSchemas, _) = runBlockingMaybeCancellable {
-                listSchemasNames(
-                    limit = null, // Don't apply limit here, apply after sorting (same as topics)
-                    filter = config.schemaFilterName
-                )
+        ) { model ->
+            // The first load can use what the editors listed already, a refresh is the way to see what others changed
+            // in the registry, so it lists again. The editors profit from that, too.
+            val listing = runBlockingMaybeCancellable {
+                if (model.isInitedByFirstTime) schemaListing.refresh() else schemaListing.get()
             }
-
-            val sortedSchemas = sortSchemasWithFavorites(
-                rawSchemas,
-                pinnedSchemas = config.schemasPined,
-                showFavoriteOnly = toolWindowSettings.showFavoriteSchema
-            )
-
-            applySchemaLimit(sortedSchemas, config.registryLimit)
+            schemaList.view(listing)
         }
     }
 

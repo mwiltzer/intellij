@@ -39,6 +39,16 @@ internal class ExpiringSingleFlight<T : Any>(
     }
 
     /**
+     * Loads the value again, whatever [ttlMillis] says, e.g. for a refresh that the user asked for. A load that is
+     * running right now is joined and not started a second time. Until the new value is there, [peek] still hands out
+     * the old one.
+     */
+    suspend fun refresh(): T {
+        val flight = synchronized(lock) { inFlight ?: startLoad() }
+        return flight.await()
+    }
+
+    /**
      * Forgets the value, so the next [get] loads again, e.g. after the data was changed.
      * A load that is running right now still serves the callers waiting for it, but its result is not kept:
      * it may have been read before the change.

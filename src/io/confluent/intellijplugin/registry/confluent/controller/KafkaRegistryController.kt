@@ -62,7 +62,7 @@ internal class KafkaRegistryController(
             override fun textChanged(e: DocumentEvent) {
                 val config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(dataManager.getSchemaRegistryConfigId())
                 config.schemaFilterName = this@apply.text
-                dataManager.schemaRegistryModel?.let { dataManager.updater.invokeRefreshModel(it) }
+                dataManager.refilterSchemas()
             }
         })
 
@@ -77,7 +77,7 @@ internal class KafkaRegistryController(
         override fun getActionUpdateThread() = ActionUpdateThread.BGT
         override fun setSelected(e: AnActionEvent, state: Boolean) {
             KafkaToolWindowSettings.getInstance().showFavoriteSchema = state
-            dataManager.schemaRegistryModel?.let { dataManager.updater.invokeRefreshModel(it) }
+            dataManager.refilterSchemas()
         }
     }
 
@@ -150,7 +150,7 @@ internal class KafkaRegistryController(
             clusterConfig.schemaFilterName = null
             KafkaToolWindowSettings.getInstance().showFavoriteSchema = false
             searchTextField.text = ""
-            dataManager.schemaRegistryModel?.let { dataManager.updater.invokeRefreshModel(it) }
+            dataManager.refilterSchemas()
         }
     }
 
@@ -184,7 +184,7 @@ internal class KafkaRegistryController(
         FilterAdapter.install(dataTable.tableModel, countFilter, LIMIT_FILTER) { limit ->
             val config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(dataManager.getSchemaRegistryConfigId())
             config.registryLimit = limit
-            dataManager.schemaRegistryModel?.let { dataManager.updater.invokeRefreshModel(it) }
+            dataManager.refilterSchemas()
         }
 
         return listOfNotNull(

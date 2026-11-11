@@ -8,8 +8,10 @@ All noteworthy changes to this plugin will be documented in this file.
 - Confluent Cloud requests are now retried with exponential backoff and jitter, honoring `Retry-After`: on rate limiting (429) for any request, and on temporary server errors (502/503/504) and connection failures for read requests. If the server asks to wait more than a minute, the request fails right away instead of retrying sooner than asked.
 - Tool window auto-refresh now varies each interval by up to ±20%. While a connection is unreachable, auto-refresh keeps re-checking it, waiting progressively longer (up to about 5 minutes), and resumes the normal interval once the connection recovers. Connections that use an SSH tunnel are not re-checked automatically; use Refresh to reconnect them.
 - Upgrade Apache Kafka client to 4.1.2 (required by the Schema Registry client's OAuth token provider)
+- The Schema Registry filter now matches schema names that contain the entered text, ignoring case, as the filters of topics and consumer groups do. It used to treat the text as a regular expression for Confluent and AWS Glue registries, which failed on text like `orders(`
 - The schema list of the consumer and producer editors no longer looks up the format of every schema of the registry. That took minutes with thousands of schemas, and a request for each of them was sent again every time an editor was opened. The formats of the selected schema and of the schema of the topic are looked up first, then those of the schemas that the list shows on screen. Schemas whose format can not be found, for example subjects that you may not read, are not asked for again for a minute
-- The schema names are kept for a minute. The editors show the names of the last listing right away while the Schema Registry is asked for the current ones, which takes seconds on a big registry. The list is corrected when the Schema Registry answers with other names. Creating or deleting schemas lists the names again
+- The schema names are kept for a minute. The editors show the names of the last listing right away while the Schema Registry is asked for the current ones, which takes seconds on a big registry. The list is corrected when the Schema Registry answers with other names. Creating or deleting schemas, and refreshing the Schema Registry in the tool window, list the names again. Until then the Schema Registry section can show names that are up to a minute old
+- The Schema Registry section is shown from one listing of the registry. Filtering, changing the limit and marking favorites no longer list the registry again, so they respond right away on a registry with thousands of schemas. Refreshing the section lists it again. The schema names of the consumer and producer editors no longer depend on the favorites toggle of the section
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
@@ -32,7 +34,9 @@ All noteworthy changes to this plugin will be documented in this file.
 - Confluent Cloud: schemas whose details were not loaded yet were shown, and offered in the editors, as Avro
 - A schema that was chosen in the consumer or producer editor, or saved with it, but no longer exists in the Schema Registry is no longer replaced by the first schema of the list without notice. The schema field is left empty and says that it must not be empty
 - The lines in `idea.log` about listing the schemas for the consumer and producer editors were logged under the category `kotlinx.coroutines.CoroutineScope`. They are now logged under the category of the schema list and tell whether they are about the key or the value
+- Confluent Cloud: the filter, the limit and the favorites of the Schema Registry section are read from the settings of the Schema Registry, where the section stores them, and no longer from those of the Kafka cluster
 - Cancelling a load of schemas or topics, for example because the connection was refreshed or closed while it ran, was handled like a failed load: it was logged as a warning and could be shown as an error. It now just ends
+- The schema tab of a topic said that the topic had no schema when the filter or the limit of the Schema Registry section kept its schema out of that section
 
 ## 253.25910.2
 ### Fixed

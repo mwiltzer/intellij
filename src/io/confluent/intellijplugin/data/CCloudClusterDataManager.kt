@@ -304,41 +304,32 @@ class CCloudClusterDataManager(
         return emptyList()
     }
 
-    override suspend fun listSchemasNames(limit: Int?, filter: String?): Pair<List<KafkaSchemaInfo>, Boolean> =
+    override suspend fun listSchemasNames(): List<KafkaSchemaInfo> =
         withContext(Dispatchers.IO) {
             if (!dataPlaneCache.hasSchemaRegistry()) {
-                return@withContext emptyList<KafkaSchemaInfo>() to false
+                return@withContext emptyList<KafkaSchemaInfo>()
             }
 
             try {
                 val schemas = dataPlaneCache.getSchemas().ifEmpty {
                     dataPlaneCache.refreshSchemas()
                 }
-                // Use SR config (not cluster config) so all clusters sharing an SR see the same favorites
-                val config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId())
 
-                var result = schemas.map { schemaData ->
+                schemas.map { schemaData ->
                     KafkaSchemaInfo(
                         name = schemaData.name,
                         type = KafkaRegistryFormat.fromLoadedSchemaType(schemaData.latestVersion, schemaData.schemaType),
                         version = schemaData.latestVersion?.toLong(),
-                        compatibility = schemaData.compatibility,
-                        isFavorite = config?.schemasPined?.contains(schemaData.name) == true
+                        compatibility = schemaData.compatibility
                     )
                 }
-
-                if (!filter.isNullOrBlank()) {
-                    result = result.filter { it.name.contains(filter, ignoreCase = true) }
-                }
-
-                result to false
             } catch (e: ProcessCanceledException) {
                 throw e
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 thisLogger().warn("Failed to list schemas for cluster ${cluster.id}", e)
-                emptyList<KafkaSchemaInfo>() to false
+                emptyList<KafkaSchemaInfo>()
             }
         }
 

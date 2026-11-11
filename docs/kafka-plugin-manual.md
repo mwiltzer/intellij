@@ -375,6 +375,16 @@ favorite: right-click a schema and select **Add to Favorites**.
 
 ---
 
+### Filter schemas
+
+A Schema Registry can have thousands of schemas. The **Schema Registry** section helps you to find the ones you work
+with:
+
+* Type in the filter field to show only the schemas whose names contain the text, ignoring case.
+
+The section keeps the list of schemas it got from the Schema Registry for a minute. Filtering, changing the limit, and
+marking favorites use that list, so they respond right away. To ask the Schema Registry again, refresh the section.
+
 ### Compare schema versions
 
 1. When connected to a Schema Registry, select a schema under **Schema Registry**.

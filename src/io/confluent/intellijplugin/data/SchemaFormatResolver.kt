@@ -32,8 +32,10 @@ import java.util.concurrent.ConcurrentHashMap
  *    again, which is what a list that is painted over and over would do,
  *  - lets everybody who asks for the same schema at the same time share one request, whether it is the tool window
  *    refreshing its details or an editor looking for the schema of its topic,
- *  - loads the schemas of a bulk request ([resolveAll], [refreshAll]) at most [parallelism] at a time,
+ *  - loads the schemas of a bulk request ([resolveAll], [refreshAll], [detailsOf]) at most [parallelism] at a time,
  *    while a single schema that somebody waits for ([formatOf]) never queues behind them,
+ *  - keeps the details it loaded for [infoTtlMillis], so a list that is shown again, e.g. with another filter, needs no
+ *    request for the schemas that were shown before,
  *  - runs the requests in its own [scope], so a caller that gives up does not fail the callers sharing its request.
  *
  * [loadSchema] must return the schema with its loaded details, see [hasLoadedDetails].
@@ -43,10 +45,17 @@ internal class SchemaFormatResolver(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val retryUnresolvedAfterMillis: Long = DEFAULT_RETRY_UNRESOLVED_AFTER_MS,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val infoTtlMillis: Long = DEFAULT_INFO_TTL_MS,
     private val loadSchema: suspend (String) -> KafkaSchemaInfo
 ) {
     private val logger = thisLogger()
     private val formats = ConcurrentHashMap<String, KafkaRegistryFormat>()
+
+    // The details the registry gave for the schemas whose format is known, so showing them again costs no request.
+    // They are kept for [infoTtlMillis] only, as they hold the latest version, which others may change.
+    private class Loaded(val info: KafkaSchemaInfo, val loadedAt: Long)
+
+    private val infos = ConcurrentHashMap<String, Loaded>()
 
     // When the format of a schema could not be found, by the clock.
     private val unresolved = ConcurrentHashMap<String, Long>()
@@ -55,6 +64,10 @@ internal class SchemaFormatResolver(
 
     /** Format of the schema [name] if it is known, without asking the registry. */
     fun known(name: String): KafkaRegistryFormat? = formats[name]
+
+    /** The details of the schema [name] as the registry gave them, if they are known, without asking the registry. */
+    fun knownInfo(name: String): KafkaSchemaInfo? =
+        infos[name]?.takeIf { clock() - it.loadedAt < infoTtlMillis }?.info
 
     /**
      * Format of the schema [name], or `null` when it can't be told because the schema is gone or its load failed.
@@ -115,19 +128,41 @@ internal class SchemaFormatResolver(
         }.awaitAll().filterNotNull().toMap()
     }
 
+    /**
+     * The details of the [names], for showing them: those that are known as they are, the others loaded from the
+     * registry at most [parallelism] at a time. A schema that could not be loaded a short while ago is not asked for
+     * again, it comes back as [KafkaSchemaInfo.createEmpty] like one that failed now. Only a request that failed
+     * without an answer leaves a name out.
+     */
+    suspend fun detailsOf(names: Collection<String>): Map<String, KafkaSchemaInfo> = coroutineScope {
+        names.distinct().map { name ->
+            async {
+                val details = knownInfo(name) ?: if (failedRecently(name)) {
+                    KafkaSchemaInfo.createEmpty(name)
+                } else {
+                    bulkSlots.withPermit { knownInfo(name) ?: load(name) }
+                }
+                details?.let { name to it }
+            }
+        }.awaitAll().filterNotNull().toMap()
+    }
+
     fun put(name: String, format: KafkaRegistryFormat) {
         unresolved.remove(name)
+        infos.remove(name)
         if (format == KafkaRegistryFormat.UNKNOWN) formats.remove(name) else formats[name] = format
     }
 
     fun remove(name: String) {
         unresolved.remove(name)
         formats.remove(name)
+        infos.remove(name)
     }
 
     fun clear() {
         unresolved.clear()
         formats.clear()
+        infos.clear()
     }
 
     /** Stops the requests that are running. */
@@ -135,6 +170,7 @@ internal class SchemaFormatResolver(
         scope.cancel()
         unresolved.clear()
         formats.clear()
+        infos.clear()
     }
 
     private fun failedRecently(name: String): Boolean {
@@ -178,11 +214,13 @@ internal class SchemaFormatResolver(
             format == null -> unresolved[name] = clock()
             format == KafkaRegistryFormat.UNKNOWN -> {
                 formats.remove(name)
+                infos.remove(name)
                 unresolved[name] = clock()
             }
 
             else -> {
                 formats[name] = format
+                infos[name] = Loaded(schema, clock())
                 unresolved.remove(name)
             }
         }
@@ -197,5 +235,8 @@ internal class SchemaFormatResolver(
 
         // Long enough for a list that is painted again and again, short enough to see a schema that became readable.
         const val DEFAULT_RETRY_UNRESOLVED_AFTER_MS = 60_000L
+
+        // Long enough to type a filter and tune a limit without a request, short enough to see a new version soon.
+        const val DEFAULT_INFO_TTL_MS = 5 * 60_000L
     }
 }

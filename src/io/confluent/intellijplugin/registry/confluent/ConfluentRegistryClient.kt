@@ -10,7 +10,6 @@ import io.confluent.intellijplugin.core.connection.tunnel.BdtSshTunnelService
 import io.confluent.intellijplugin.core.rfs.driver.runBlockingInterruptible
 import io.confluent.intellijplugin.core.settings.components.BdtPropertyComponent
 import io.confluent.intellijplugin.core.util.toPresentableText
-import io.confluent.intellijplugin.data.KafkaDataManager.Companion.sortedSchemas
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
@@ -42,20 +41,18 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
         }
     }
 
-    fun listSchemas(
-        limit: Int?,
-        filter: String?,
-        registryShowDeletedSubjects: Boolean,
-        connectionId: String
-    ): Pair<List<KafkaSchemaInfo>, Boolean> {
-        val names =
-            internalClient.getAllSubjects(registryShowDeletedSubjects)?.sortedBy { it.lowercase() } ?: emptyList()
-        val regex = filter?.let { Regex(it) }
-        val filteredNames = names.filter { regex == null || it.contains(regex) }.filter { !it.endsWith("/") }
-        return filteredNames.map { KafkaSchemaInfo(it) }.sortedSchemas(connectionId).take(
-            limit ?: Int.MAX_VALUE
-        ) to (limit != null && names.size > limit)
-    }
+    /**
+     * The subjects of the registry, in the order of their names regardless of the case. A name that ends with a slash
+     * is no schema, so it is left out. What the tool window shows of them is decided by its settings, not here.
+     */
+    fun listSchemas(registryShowDeletedSubjects: Boolean = false): List<KafkaSchemaInfo> =
+        toSchemas(internalClient.getAllSubjects(registryShowDeletedSubjects))
+
+    private fun toSchemas(subjects: Collection<String>?): List<KafkaSchemaInfo> =
+        (subjects ?: emptyList())
+            .filter { !it.endsWith("/") }
+            .sortedBy { it.lowercase() }
+            .map { KafkaSchemaInfo(it) }
 
     fun loadSchemaInfo(schemaName: String): KafkaSchemaInfo {
         val meta = try {

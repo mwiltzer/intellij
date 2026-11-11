@@ -143,11 +143,10 @@ class KafkaDataManager(
         }.distinct()
     }
 
-    override suspend fun listSchemasNames(limit: Int?, filter: String?): Pair<List<KafkaSchemaInfo>, Boolean> {
-        return client.confluentRegistryClient?.listSchemas(limit, filter, false, connectionId)
-            ?: client.glueRegistryClient?.listSchemas(limit, filter, connectionId)
-            ?: (emptyList<KafkaSchemaInfo>() to false)
-    }
+    override suspend fun listSchemasNames(): List<KafkaSchemaInfo> =
+        client.confluentRegistryClient?.listSchemas()
+            ?: client.glueRegistryClient?.listSchemas(filter = null)?.first
+            ?: emptyList()
 
     override suspend fun updateSchemaList(
         schemas: List<KafkaSchemaInfo>

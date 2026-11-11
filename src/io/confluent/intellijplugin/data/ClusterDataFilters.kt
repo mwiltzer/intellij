@@ -77,10 +77,15 @@ internal object ClusterDataFilters {
         schemas: List<KafkaSchemaInfo>,
         filterName: String?
     ): List<KafkaSchemaInfo> {
-        return schemas.filter { schema ->
-            filterName == null || schema.name.contains(filterName, ignoreCase = true)
-        }
+        return schemas.filter { schema -> matchesName(schema.name, filterName) }
     }
+
+    /**
+     * Whether the [name] passes the [filter]: it contains the filter, regardless of the case. No filter, or a blank
+     * one, lets every name pass. The filter is plain text: characters such as `(` or `.` mean themselves.
+     */
+    fun matchesName(name: String, filter: String?): Boolean =
+        filter.isNullOrBlank() || name.contains(filter, ignoreCase = true)
 
     fun sortSchemasWithFavorites(
         schemas: List<KafkaSchemaInfo>,
@@ -102,4 +107,56 @@ internal object ClusterDataFilters {
                 .thenBy { it.name.lowercase() }
         )
     }
+
+    /**
+     * The schemas the tool window shows out of everything the registry lists: those that match the filter, the
+     * pinned ones first (only those with [SchemaListSettings.favoritesOnly]), then no more than the limit.
+     *
+     * [sortedByName] must be in the order of the names regardless of the case, which is the order of the result,
+     * so a registry with thousands of schemas is not sorted again whenever the filter changes.
+     */
+    fun schemaListView(sortedByName: List<KafkaSchemaInfo>, settings: SchemaListSettings): SchemaListView {
+        val limit = settings.limit
+        val pinned = settings.pinned
+        val favorites = ArrayList<KafkaSchemaInfo>()
+        val others = ArrayList<KafkaSchemaInfo>()
+        var matching = 0
+
+        for (schema in sortedByName) {
+            if (!matchesName(schema.name, settings.filter)) continue
+
+            if (schema.name in pinned) {
+                favorites += schema
+                matching++
+            } else if (!settings.favoritesOnly) {
+                matching++
+                // No more than can be shown are kept, and one more to tell that there are more.
+                if (limit == null || others.size <= limit) others += schema
+            }
+        }
+
+        val ordered = favorites + others
+        val shown = if (limit != null) ordered.take(limit) else ordered
+        return SchemaListView(
+            schemas = shown.map { schema ->
+                val isFavorite = schema.name in pinned
+                if (schema.isFavorite == isFavorite) schema else schema.copy(isFavorite = isFavorite)
+            },
+            hasMore = limit != null && matching > limit
+        )
+    }
 }
+
+/** What shapes the schema list of the tool window, see [ClusterDataFilters.schemaListView]. */
+internal data class SchemaListSettings(
+    val filter: String?,
+    val pinned: Set<String>,
+    val favoritesOnly: Boolean,
+    val limit: Int?
+)
+
+/** The schemas to show, and whether the limit left out more that match. */
+internal data class SchemaListView(
+    val schemas: List<KafkaSchemaInfo>,
+    val hasMore: Boolean
+)

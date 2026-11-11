@@ -217,6 +217,93 @@ class ExpiringSingleFlightTest {
     }
 
     @Test
+    fun `should load again on refresh although the value has not expired`() = runBlocking<Unit> {
+        val flight = flightOf { n -> "value-$n" }
+        assertEquals("value-1", flight.get())
+
+        assertEquals("value-2", flight.refresh())
+
+        assertEquals(2, loads.get())
+        // What a refresh loaded is what the next get serves.
+        assertEquals("value-2", flight.get())
+        assertEquals(2, loads.get())
+    }
+
+    @Test
+    fun `should load on refresh when nothing was loaded yet`() = runBlocking<Unit> {
+        val flight = flightOf { n -> "value-$n" }
+
+        assertEquals("value-1", flight.refresh())
+
+        assertEquals("value-1", flight.peek())
+    }
+
+    @Test
+    fun `should join the load that runs when refreshing`() = runBlocking<Unit> {
+        val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val flight = flightOf { n -> started.complete(Unit); release.await(); "value-$n" }
+
+        val getter = async(Dispatchers.Default) { flight.get() }
+        withTimeout(5_000) { started.await() }
+        // Undispatched, so that all of them have joined the load before it is released.
+        val refreshers = (1..3).map {
+            async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { flight.refresh() }
+        }
+        release.complete(Unit)
+
+        assertEquals("value-1", withTimeout(5_000) { getter.await() })
+        assertEquals(List(3) { "value-1" }, withTimeout(5_000) { refreshers.awaitAll() })
+        assertEquals(1, loads.get())
+    }
+
+    @Test
+    fun `should share one load between callers that refresh at the same time`() = runBlocking<Unit> {
+        val release = CompletableDeferred<Unit>()
+        val flight = flightOf { n -> release.await(); "value-$n" }
+
+        // Undispatched, so that all of them have joined the load before it is released.
+        val callers = (1..5).map {
+            async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { flight.refresh() }
+        }
+        release.complete(Unit)
+
+        assertEquals(List(5) { "value-1" }, withTimeout(5_000) { callers.awaitAll() })
+        assertEquals(1, loads.get())
+    }
+
+    @Test
+    fun `should still peek at the old value while a refresh runs`() = runBlocking<Unit> {
+        val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val flight = flightOf { n ->
+            if (n == 2) { started.complete(Unit); release.await() }
+            "value-$n"
+        }
+        flight.get()
+
+        val refresher = async(Dispatchers.Default) { flight.refresh() }
+        withTimeout(5_000) { started.await() }
+
+        assertEquals("value-1", flight.peek())
+        release.complete(Unit)
+        assertEquals("value-2", withTimeout(5_000) { refresher.await() })
+        assertEquals("value-2", flight.peek())
+    }
+
+    @Test
+    fun `should keep the old value when a refresh fails`() = runBlocking<Unit> {
+        val flight = flightOf { n -> if (n == 2) error("boom") else "value-$n" }
+        flight.get()
+
+        assertThrows<IllegalStateException> { flight.refresh() }
+
+        assertEquals("value-1", flight.peek())
+        assertEquals("value-1", flight.get())
+        assertEquals(2, loads.get())
+    }
+
+    @Test
     fun `should not join a load that was started before the value was invalidated`() = runBlocking<Unit> {
         val release = CompletableDeferred<Unit>()
         val firstStarted = CompletableDeferred<Unit>()
@@ -230,7 +317,7 @@ class ExpiringSingleFlightTest {
         val beforeChange = async(Dispatchers.Default) { flight.get() }
         withTimeout(5_000) { firstStarted.await() }
         flight.invalidate()
-        val afterChange = async(Dispatchers.Default) { flight.get() }
+        val afterChange = async(Dispatchers.Default) { flight.refresh() }
         withTimeout(5_000) { secondStarted.await() }
         release.complete(Unit)
 

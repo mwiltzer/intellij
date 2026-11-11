@@ -305,6 +305,35 @@ class ClusterDataFiltersTest {
     }
 
     @Nested
+    @DisplayName("matchesName")
+    inner class MatchesName {
+
+        @Test
+        fun `should match a part of the name regardless of the case`() {
+            assertTrue(ClusterDataFilters.matchesName("Orders-Value", "orders"))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "-VALUE"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "payments"))
+        }
+
+        @Test
+        fun `should let every name pass without a filter`() {
+            assertTrue(ClusterDataFilters.matchesName("orders-value", null))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", ""))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "   "))
+        }
+
+        @Test
+        fun `should take the filter literally instead of as a pattern`() {
+            // `(` is an invalid pattern, `.` and `*` would match anything as one.
+            assertTrue(ClusterDataFilters.matchesName("orders(v1)-value", "orders(v1"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "(v1"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "o.ders"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "ord*"))
+            assertTrue(ClusterDataFilters.matchesName("orders.v1-value", "orders.v1"))
+        }
+    }
+
+    @Nested
     @DisplayName("sortSchemasWithFavorites")
     inner class SortSchemasWithFavorites {
 
