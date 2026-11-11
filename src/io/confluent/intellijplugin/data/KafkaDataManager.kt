@@ -31,6 +31,7 @@ import io.confluent.intellijplugin.rfs.KafkaConnectionData
 import io.confluent.intellijplugin.rfs.KafkaDriver
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
+import io.confluent.intellijplugin.util.catchFailures
 import io.confluent.kafka.schemaregistry.ParsedSchema
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -157,7 +158,7 @@ class KafkaDataManager(
     override suspend fun updateSchemaList(
         schemas: List<KafkaSchemaInfo>
     ): Pair<List<KafkaSchemaInfo>, Throwable?> = withContext(Dispatchers.IO) {
-        try {
+        catchFailures(onFailure = { t -> schemas.map { it.copy(type = null, version = null) } to t }) {
             schemaTypeCache.clear()
             val loadedInfo = schemas.map {
                 runAsyncSuspend {
@@ -170,8 +171,6 @@ class KafkaDataManager(
                 }
             }.map { it.await() }
             loadedInfo to null
-        } catch (t: Throwable) {
-            schemas.map { it.copy(type = null, version = null) } to t
         }
     }
 

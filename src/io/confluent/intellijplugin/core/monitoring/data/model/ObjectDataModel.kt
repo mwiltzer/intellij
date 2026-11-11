@@ -1,5 +1,7 @@
 package io.confluent.intellijplugin.core.monitoring.data.model
 
+import com.intellij.openapi.progress.ProcessCanceledException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -24,6 +26,12 @@ open class ObjectDataModel<T : RemoteInfo>(
                 val res = loadFun(this@ObjectDataModel)
                 setData(res.first)
                 additionalLoadError = res.second
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: ProcessCanceledException) {
+                // The update was cancelled, and blocking calls report that like this. It is no error of the model, and
+                // it must not fail the refresh it belongs to: the data of the first phase stays as it is.
+                return@launch
             } catch (t: Throwable) {
                 setError(t)
             }

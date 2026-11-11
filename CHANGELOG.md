@@ -11,6 +11,7 @@ All noteworthy changes to this plugin will be documented in this file.
 ### Added
 - MessagePack serialization support for consumer and producer records
 - OAuth 2.0 (client credentials) authentication for Confluent Schema Registry connections
+- Loading topics that takes a second or longer is now logged at INFO level in `idea.log`, which helps to find out why a connection feels slow
 ### Removed
 ### Fixed
 - Deleting a consumer group that the broker rejects (for example, one that still has active members) now shows an error instead of appearing to succeed.
@@ -25,6 +26,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - Restarting the Confluent Cloud producer right after stopping it no longer lets the stopped run, still finishing its last produce request, stop the new run. While a producer is stopping, its button shows "Stopping..." and is disabled until that request finishes, so a second click no longer starts a new run.
 - Stopping the Confluent Cloud producer while it is waiting out rate limiting (429) now takes effect right away, instead of after the wait (up to about 3 minutes). A produce request already sent still finishes, so its record is reported.
 - Confluent Cloud tokens now refresh well before they expire, at a random point between 70% and 90% of the lifetime stated in each token, instead of a few seconds before. A slow refresh no longer leaves requests going out with an expired token.
+- Cancelling a load of schemas or topics, for example because the connection was refreshed or closed while it ran, was handled like a failed load: it was logged as a warning and could be shown as an error. It now just ends
 
 ## 253.25910.2
 ### Fixed

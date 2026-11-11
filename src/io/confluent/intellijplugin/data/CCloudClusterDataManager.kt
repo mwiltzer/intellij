@@ -331,6 +331,10 @@ class CCloudClusterDataManager(
                 }
 
                 result to false
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 thisLogger().warn("Failed to list schemas for cluster ${cluster.id}", e)
                 emptyList<KafkaSchemaInfo>() to false
@@ -412,6 +416,10 @@ class CCloudClusterDataManager(
         try {
             schemaEnrichmentJob = launchSchemaEnrichment(schemas)
             schemas to null
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             thisLogger().warn("Failed to update schema list for cluster ${cluster.id}", e)
             schemas to e

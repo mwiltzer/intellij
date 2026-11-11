@@ -30,6 +30,7 @@ import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
+import io.confluent.intellijplugin.util.catchFailures
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -365,13 +366,13 @@ abstract class BaseClusterDataManager(
         idFieldName = TopicPresentable::name,
         additionalInfoLoading = { model ->
             val basicTopics = model.data ?: emptyList()
-            try {
+            catchFailures(onFailure = { t ->
+                thisLogger().warn("Failed to load detailed topics info for connection $connectionId", t)
+                basicTopics to t
+            }) {
                 runBlockingMaybeCancellable {
                     loadDetailedTopicsInfo(basicTopics)
                 }
-            } catch (t: Throwable) {
-                thisLogger().warn("Failed to load detailed topics info for connection $connectionId", t)
-                basicTopics to t
             }
         }
     ) {
@@ -462,13 +463,13 @@ abstract class BaseClusterDataManager(
             idFieldName = KafkaSchemaInfo::name,
             additionalInfoLoading = { model ->
                 val basicSchemas = model.data ?: emptyList()
-                try {
+                catchFailures(onFailure = { t ->
+                    thisLogger().warn("Failed to update schema list for connection $connectionId", t)
+                    basicSchemas.map { it.copy(type = null, version = null) } to t
+                }) {
                     runBlockingMaybeCancellable {
                         updateSchemaList(basicSchemas)
                     }
-                } catch (t: Throwable) {
-                    thisLogger().warn("Failed to update schema list for connection $connectionId", t)
-                    basicSchemas.map { it.copy(type = null, version = null) } to t
                 }
             }
         ) {

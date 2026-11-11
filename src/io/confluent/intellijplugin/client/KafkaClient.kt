@@ -27,6 +27,7 @@ import io.confluent.intellijplugin.rfs.KafkaPropertySource
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import io.confluent.intellijplugin.util.KafkaSslUtils
+import io.confluent.intellijplugin.util.timed
 import kotlinx.coroutines.TimeoutCancellationException
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.*
@@ -309,14 +310,18 @@ class KafkaClient(
     private fun getTopicNames(listInternal: Boolean): List<String> {
         val listTopicsOptions = ListTopicsOptions()
         listTopicsOptions.listInternal(listInternal)
-        val names = kafkaAdminNotNull.listTopics(listTopicsOptions).names().get() ?: emptySet()
+        val names = thisLogger().timed("Listing the topics") {
+            kafkaAdminNotNull.listTopics(listTopicsOptions).names().get() ?: emptySet()
+        }
         val filteredNames = if (listInternal)
             names
         else
             names.filter { !it.startsWith("_") }
         val topicNames = filteredNames.sorted().filter { !it.endsWith("/") }
         
-        val virtualTopics = getVirtualTopics(topicNames)
+        val virtualTopics = thisLogger().timed("Checking ${topicNames.size} topics for virtual ones") {
+            getVirtualTopics(topicNames)
+        }
         return topicNames.filterNot { virtualTopics.contains(it) }
     }
     
