@@ -200,6 +200,10 @@ favorite: right-click a topic and select **Add to Favorites**.
    with thousands of schemas it can take a moment to appear. If a schema that you chose or saved in an editor no
    longer exists in the Schema Registry, the schema field stays empty instead of showing another schema.
 
+   The schemas that matter come first in the list: the schema of the topic (`<topic>-value`, or `<topic>-key` for a
+   key), the other schema of the topic, other schemas whose names start with the name of the topic, your favorites, all
+   the others in alphabetical order, and the internal schemas (names that start with an underscore) last.
+
 7. Under **Headers**, provide any custom headers. If you have them in JSON or CSV format, you can paste them into this
    section.
 8. Under **Flow**, you can control the record flow:

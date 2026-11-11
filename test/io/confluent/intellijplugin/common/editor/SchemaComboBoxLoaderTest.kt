@@ -56,6 +56,11 @@ class SchemaComboBoxLoaderTest {
 
         override fun getCachedSchemaNames() = cachedNames
 
+        @Volatile
+        var pinned: Set<String> = emptySet()
+
+        override fun getPinnedSchemaNames() = pinned
+
         override fun getKnownSchemaFormat(name: String) = known[name]
 
         override suspend fun getSchemaFormat(name: String): KafkaRegistryFormat? {
@@ -218,7 +223,7 @@ class SchemaComboBoxLoaderTest {
 
             fixture.loader.load()
 
-            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
             eventually("the request for the formats") { source.resolveRequests.isNotEmpty() }
             val (names, first) = source.resolveRequests.first()
             // The schema of the topic is the selected one, and these two are not all the schemas.
@@ -589,13 +594,13 @@ class SchemaComboBoxLoaderTest {
             val source = sourceOf("audit-value", "orders-value", "payments-value")
             val fixture = fixtureFor(source)
             fixture.loader.load()
-            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
             fixture.select("payments-value")
 
             source.names = listOf("audit-value", "new-value", "orders-value", "payments-value")
             fixture.loader.reload()
 
-            fixture.awaitNames("audit-value", "new-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "new-value", "payments-value")
             assertEquals("payments-value", fixture.selectedName())
         }
 
@@ -653,7 +658,7 @@ class SchemaComboBoxLoaderTest {
             topic = "orders"
             val fixture = fixtureFor(sourceOf("audit-value", "orders-value", "payments-value"))
             fixture.loader.load()
-            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
             fixture.select("audit-value")
 
             topic = "payments"
@@ -667,7 +672,7 @@ class SchemaComboBoxLoaderTest {
             topic = "orders"
             val fixture = fixtureFor(sourceOf("audit-value", "orders-value", "payments-value"))
             fixture.loader.load()
-            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
             fixture.select("audit-value")
 
             topic = "unrelated"
@@ -682,7 +687,7 @@ class SchemaComboBoxLoaderTest {
             topic = "orders"
             val fixture = fixtureFor(sourceOf("audit-value", "orders-value", "payments-value"))
             fixture.loader.load()
-            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
             fixture.select("audit-value")
 
             topic = "payments"
@@ -698,7 +703,7 @@ class SchemaComboBoxLoaderTest {
             val source = sourceOf("audit-value", "orders-value", "payments-value")
             val fixture = fixtureFor(source)
             fixture.loader.load()
-            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
 
             // What an editor does when it restores its settings: the topic first, then its schema.
             topic = "payments"
@@ -723,7 +728,7 @@ class SchemaComboBoxLoaderTest {
                 KafkaEditorUtils.selectSchemaByName(fixture.combo, "audit-value", KafkaRegistryFormat.AVRO)
             }
 
-            fixture.awaitNames("audit-value", "orders-value")
+            fixture.awaitNames("orders-value", "audit-value")
             eventually("the list to be shown with the saved schema") {
                 source.resolveRequests.any { (_, first) -> first.firstOrNull() == "audit-value" }
             }
@@ -811,6 +816,114 @@ class SchemaComboBoxLoaderTest {
 
             fixture.awaitNames("audit-value", "orders-value")
             assertEquals(KafkaRegistryFormat.PROTOBUF, fixture.format("orders-value"))
+        }
+    }
+
+    @Nested
+    inner class `order of the schemas` {
+
+        @Test
+        fun `should list the schema of the topic first`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf("audit-value", "orders-value", "payments-value"))
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
+        }
+
+        @Test
+        fun `should list the schema for the value before the one for the key of the topic for a value`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf("audit-value", "orders-key", "orders-value"))
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-value", "orders-key", "audit-value")
+        }
+
+        @Test
+        fun `should list the schemas of the topic first for a key`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf("audit-key", "orders-key", "orders-value", "payments-key"), isKey = true)
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-key", "orders-value", "audit-key", "payments-key")
+        }
+
+        @Test
+        fun `should list the pinned schemas after the ones of the topic`() {
+            topic = "orders"
+            val source = sourceOf("audit-value", "new-value", "orders-value", "payments-value")
+            source.pinned = setOf("payments-value")
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            fixture.awaitNames("orders-value", "payments-value", "audit-value", "new-value")
+        }
+
+        @Test
+        fun `should list the internal schemas last`() {
+            val fixture = fixtureFor(sourceOf("_schemas", "audit-value", "payments-value"))
+
+            fixture.loader.load()
+
+            fixture.awaitNames("audit-value", "payments-value", "_schemas")
+        }
+
+        @Test
+        fun `should list all schemas alphabetically when the topic is not known`() {
+            val fixture = fixtureFor(sourceOf("payments-value", "orders-value", "audit-value"))
+
+            fixture.loader.load()
+
+            fixture.awaitNames("audit-value", "orders-value", "payments-value")
+        }
+
+        @Test
+        fun `should follow the topic when another one is chosen`() {
+            topic = "orders"
+            val fixture = fixtureFor(sourceOf("audit-value", "orders-value", "payments-value"))
+            fixture.loader.load()
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
+
+            topic = "payments"
+            fixture.loader.load(topicChanged = true)
+
+            fixture.awaitNames("payments-value", "audit-value", "orders-value")
+        }
+
+        @Test
+        fun `should list the names that were listed before in the same way`() {
+            topic = "orders"
+            val source = sourceOf("audit-value", "orders-value", "payments-value")
+            source.cachedNames = listOf("audit-value", "orders-value", "payments-value")
+            source.listingGate = CompletableDeferred()
+            val fixture = fixtureFor(source)
+
+            fixture.loader.load()
+
+            // The registry has not answered yet.
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
+            assertFalse(fixture.loader.isListing)
+        }
+
+        @Test
+        fun `should keep the selected schema when the order changes`() {
+            topic = "orders"
+            val source = sourceOf("audit-value", "orders-value", "payments-value")
+            val fixture = fixtureFor(source)
+            fixture.loader.load()
+            fixture.awaitNames("orders-value", "audit-value", "payments-value")
+            fixture.select("payments-value")
+
+            source.pinned = setOf("payments-value")
+            fixture.loader.reload()
+
+            fixture.awaitNames("orders-value", "payments-value", "audit-value")
+            assertEquals("payments-value", fixture.selectedName())
         }
     }
 

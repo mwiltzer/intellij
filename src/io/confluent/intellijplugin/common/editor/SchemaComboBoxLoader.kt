@@ -191,7 +191,8 @@ internal class SchemaComboBoxLoader(
         val model = comboBox.model
         val shownBefore = (0 until model.size).map { model.getElementAt(it) }
         val itemsByName = shownBefore.associateBy { it.schemaName }
-        val items = listed.distinct().sortedWith(ALPHABETICAL).map { name ->
+        val order = SchemaOrder.comparator(topic().orEmpty(), isKey, source.getPinnedSchemaNames())
+        val items = listed.distinct().sortedWith(order).map { name ->
             (itemsByName[name] ?: RegistrySchemaInEditor(name)).also { item ->
                 source.getKnownSchemaFormat(name)?.let { item.schemaFormat = it }
             }
@@ -246,8 +247,5 @@ internal class SchemaComboBoxLoader(
         // A list shows a dozen rows. The ones that were painted before are most likely out of view.
         const val MAX_WANTED = 40
         const val WANTED_SETTLE_MS = 150L
-
-        // Regardless of the case, which is only a tiebreaker, so that names that differ only by it do not change places.
-        private val ALPHABETICAL = compareBy<String>({ it.lowercase() }, { it })
     }
 }

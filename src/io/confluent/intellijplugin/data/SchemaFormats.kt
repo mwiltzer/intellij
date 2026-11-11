@@ -22,6 +22,9 @@ interface SchemaFormats {
      */
     fun getCachedSchemaNames(): List<String>? = null
 
+    /** The names of the schemas the user pinned as favorites, which the editors list first. Never asks the registry. */
+    fun getPinnedSchemaNames(): Set<String> = emptySet()
+
     /** Format of the schema if it is known already; never asks the registry. */
     fun getKnownSchemaFormat(name: String): KafkaRegistryFormat?
 

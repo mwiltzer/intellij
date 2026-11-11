@@ -355,6 +355,9 @@ abstract class BaseClusterDataManager(
 
     override fun getCachedSchemaNames(): List<String>? = schemaListing.peek()?.names
 
+    override fun getPinnedSchemaNames(): Set<String> =
+        KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId()).schemasPined.toSet()
+
     override fun getKnownSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.known(name)
 
     override suspend fun getSchemaFormat(name: String): KafkaRegistryFormat? = schemaFormats.formatOf(name)
