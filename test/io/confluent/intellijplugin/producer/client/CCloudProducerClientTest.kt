@@ -12,6 +12,7 @@ import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.consumer.models.ConsumerProducerFieldConfig
 import io.confluent.intellijplugin.core.settings.connections.Property
 import io.confluent.intellijplugin.data.CCloudClusterDataManager
+import io.confluent.intellijplugin.registry.AvroJson
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.testutil.fixture
@@ -552,6 +553,136 @@ class CCloudProducerClientTest {
     }
 
     @Nested
+    @DisplayName("schema versions")
+    inner class SchemaVersions {
+
+        private fun registryField(schemaName: String, version: Long?, isKey: Boolean = false) =
+            ConsumerProducerFieldConfig(
+                type = KafkaFieldType.SCHEMA_REGISTRY,
+                valueText = """{"k": 1}""",
+                isKey = isKey,
+                topic = "test-topic",
+                registryType = KafkaRegistryType.CONFLUENT,
+                schemaName = schemaName,
+                schemaFormat = KafkaRegistryFormat.JSON,
+                parsedSchema = null,
+                schemaVersion = version
+            )
+
+        private fun response(subject: String, version: Int, id: Int) =
+            SchemaVersionResponse(subject = subject, version = version, id = id, schema = "{}", schemaType = "JSON")
+
+        private val fetcher = mock<DataPlaneFetcher>()
+
+        private fun idOf(data: io.confluent.intellijplugin.ccloud.model.response.ProduceRecordData?) =
+            java.nio.ByteBuffer.wrap(Base64.getDecoder().decode(data!!.data), 1, 4).getInt()
+
+        @Test
+        fun `should write with the ID of the chosen version`() = runBlocking {
+            whenever(fetcher.getSchemaVersionInfo("orders-value", 2L)).thenReturn(response("orders-value", 2, 200))
+
+            val data = client.buildRecordData(fetcher, registryField("orders-value", 2), "test-topic")
+
+            assertEquals(200, idOf(data))
+            verify(fetcher, times(1)).getSchemaVersionInfo("orders-value", 2L)
+            verify(fetcher, never()).getLatestVersionInfo(any())
+        }
+
+        @Test
+        fun `should write with the ID of the latest version when none was chosen`() = runBlocking {
+            whenever(fetcher.getLatestVersionInfo("orders-value")).thenReturn(response("orders-value", 5, 500))
+
+            val data = client.buildRecordData(fetcher, registryField("orders-value", null), "test-topic")
+
+            assertEquals(500, idOf(data))
+            verify(fetcher, never()).getSchemaVersionInfo(any(), any())
+        }
+
+        @Test
+        fun `should find the chosen version in the cache`() = runBlocking {
+            val cache = mapOf(
+                "orders-value" to response("orders-value", 5, 500),
+                "orders-value@2" to response("orders-value", 2, 200)
+            )
+
+            assertEquals(200, idOf(client.buildRecordData(fetcher, registryField("orders-value", 2), "test-topic", cache)))
+            assertEquals(500, idOf(client.buildRecordData(fetcher, registryField("orders-value", null), "test-topic", cache)))
+
+            verify(fetcher, never()).getSchemaVersionInfo(any(), any())
+            verify(fetcher, never()).getLatestVersionInfo(any())
+        }
+
+        @Test
+        fun `should fall back to the fetcher for a version that is not cached`() = runBlocking {
+            whenever(fetcher.getSchemaVersionInfo("orders-value", 3L)).thenReturn(response("orders-value", 3, 300))
+            val cache = mapOf("orders-value@2" to response("orders-value", 2, 200))
+
+            val data = client.buildRecordData(fetcher, registryField("orders-value", 3), "test-topic", cache)
+
+            assertEquals(300, idOf(data))
+        }
+
+        @Test
+        fun `should keep the versions of one schema apart in the cache`() = runBlocking {
+            whenever(fetcher.getSchemaVersionInfo("orders-value", 1L)).thenReturn(response("orders-value", 1, 100))
+            whenever(fetcher.getSchemaVersionInfo("orders-value", 2L)).thenReturn(response("orders-value", 2, 200))
+
+            val cache = client.resolveSchemaCache(
+                fetcher,
+                registryField("orders-value", 1, isKey = true),
+                registryField("orders-value", 2)
+            )
+
+            assertEquals(2, cache.size)
+            assertEquals(100, cache["orders-value@1"]!!.id)
+            assertEquals(200, cache["orders-value@2"]!!.id)
+        }
+
+        @Test
+        fun `should fetch a version once when the key and the value use it`() = runBlocking {
+            whenever(fetcher.getSchemaVersionInfo("orders-value", 2L)).thenReturn(response("orders-value", 2, 200))
+
+            val cache = client.resolveSchemaCache(
+                fetcher,
+                registryField("orders-value", 2, isKey = true),
+                registryField("orders-value", 2)
+            )
+
+            assertEquals(1, cache.size)
+            verify(fetcher, times(1)).getSchemaVersionInfo("orders-value", 2L)
+        }
+
+        @Test
+        fun `should fetch the latest version only for the fields that did not choose one`() = runBlocking {
+            whenever(fetcher.getLatestVersionInfo("orders-value")).thenReturn(response("orders-value", 5, 500))
+            whenever(fetcher.getSchemaVersionInfo("other-value", 1L)).thenReturn(response("other-value", 1, 10))
+
+            val cache = client.resolveSchemaCache(
+                fetcher,
+                registryField("orders-value", null, isKey = true),
+                registryField("other-value", 1)
+            )
+
+            assertEquals(setOf("orders-value", "other-value@1"), cache.keys)
+            verify(fetcher, times(1)).getLatestVersionInfo("orders-value")
+            verify(fetcher, times(1)).getSchemaVersionInfo("other-value", 1L)
+        }
+
+        @Test
+        fun `should leave out the fields that do not use the registry`() = runBlocking {
+            val cache = client.resolveSchemaCache(
+                fetcher,
+                createFieldConfig(KafkaFieldType.STRING, "k", isKey = true),
+                registryField("", 2)
+            )
+
+            assertTrue(cache.isEmpty())
+            verify(fetcher, never()).getSchemaVersionInfo(any(), any())
+            verify(fetcher, never()).getLatestVersionInfo(any())
+        }
+    }
+
+    @Nested
     @DisplayName("serializePrimitive")
     inner class SerializePrimitive {
 
@@ -646,6 +777,31 @@ class CCloudProducerClientTest {
             val decoder = org.apache.avro.io.DecoderFactory.get().binaryDecoder(bytes, null)
             val result = reader.read(null, decoder) as org.apache.avro.generic.GenericRecord
             assertEquals("hello", result.get("name").toString())
+        }
+
+        @Test
+        fun `should write the same bytes for JSON as AKHQ shows it as for the Avro JSON encoding`() {
+            val avroSchema = AvroSchema(
+                """{"type":"record","name":"Order","fields":[
+                    {"name":"id","type":"long"},
+                    {"name":"customerName","type":["null","string"],"default":null},
+                    {"name":"createdAt","type":{"type":"long","logicalType":"timestamp-millis"}}]}"""
+            )
+            val avroJson = """{"id":1,"customerName":{"string":"Ada"},"createdAt":1714558530123}"""
+            val akhqJson = """{"id":1,"customerName":"Ada","createdAt":"2024-05-01T10:15:30.123Z"}"""
+
+            val expected = client.serializeAvro(AvroSchemaUtils.toObject(avroJson, avroSchema), avroSchema)
+            val actual = client.serializeAvro(AvroJson.toObject(akhqJson, avroSchema), avroSchema)
+
+            assertArrayEquals(expected, actual)
+        }
+
+        @Test
+        fun `should serialize null for a schema that allows it`() {
+            val avroSchema = AvroSchema("""["null","string"]""")
+
+            // Avro writes the index of the union branch, which is 0 for null.
+            assertArrayEquals(byteArrayOf(0), client.serializeAvro(null, avroSchema))
         }
     }
 

@@ -1,0 +1,59 @@
+package io.confluent.intellijplugin.data
+
+import io.confluent.intellijplugin.registry.KafkaRegistryFormat
+
+/**
+ * What the producer and consumer editors need to know about the schemas of the registry.
+ *
+ * The editors show the names of all schemas right away and find out the formats afterwards, and only of the schemas
+ * that matter, because the format of a schema costs a registry request and a registry can hold thousands of schemas.
+ */
+interface SchemaFormats {
+
+    /**
+     * Names of all schemas the editors can reference. Costs one registry request at most.
+     * `null` if it failed, which is something else than a registry without schemas.
+     */
+    suspend fun getSchemaNamesForEditor(): List<String>?
+
+    /**
+     * The names of the schemas that suit the [topic]: the ones that start with its name, such as `orders-value` and
+     * `orders-key` for the topic `orders`. A registry that can list by prefix gives them in a fraction of the time
+     * [getSchemaNamesForEditor] needs for all schemas, which takes seconds in a big registry. And it gives the current
+     * ones, so a schema that was registered after all the schemas were listed is among them.
+     * `null` if there is no faster way, or it failed: [getSchemaNamesForEditor] is the way then.
+     */
+    suspend fun getSchemaNamesForTopic(topic: String): List<String>? = null
+
+    /**
+     * Names that have the schemas of the [topic] among them, as fast as the registry allows: those of
+     * [getSchemaNamesForTopic], else all of them. Empty if the registry could not be asked.
+     */
+    suspend fun getSchemaNamesToFindTopicSchemas(topic: String): List<String> =
+        getSchemaNamesForTopic(topic) ?: getSchemaNamesForEditor().orEmpty()
+
+    /**
+     * The names that were listed before, also when they are old; `null` if there are none.
+     * Never asks the registry: it is meant for showing something right away while [getSchemaNamesForEditor] runs.
+     */
+    fun getCachedSchemaNames(): List<String>? = null
+
+    /** The names of the schemas the user pinned as favorites, which the editors list first. Never asks the registry. */
+    fun getPinnedSchemaNames(): Set<String> = emptySet()
+
+    /** Format of the schema if it is known already; never asks the registry. */
+    fun getKnownSchemaFormat(name: String): KafkaRegistryFormat?
+
+    /** Format of the schema, asked for right away if it is not known yet; `null` if it can't be told. */
+    suspend fun getSchemaFormat(name: String): KafkaRegistryFormat?
+
+    /**
+     * Reports the formats of the [names]: at once those that are known, the others as soon as they are found,
+     * a few at a time. The ones in [first] are done before the others. Returns when all [names] are done.
+     */
+    suspend fun resolveSchemaFormats(
+        names: Collection<String>,
+        first: Collection<String> = emptyList(),
+        onResolved: (name: String, format: KafkaRegistryFormat) -> Unit
+    )
+}

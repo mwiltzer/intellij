@@ -8,6 +8,7 @@ import io.confluent.intellijplugin.aws.connection.auth.AwsAuthUtil
 import io.confluent.intellijplugin.aws.driver.AwsCredentialController
 import io.confluent.intellijplugin.aws.ui.external.AwsSettingsInfo
 import io.confluent.intellijplugin.core.util.TimeUtils
+import io.confluent.intellijplugin.data.ClusterDataFilters
 import io.confluent.intellijplugin.data.KafkaDataManager.Companion.sortedSchemas
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
@@ -90,7 +91,6 @@ class BdtGlueRegistryClient(
         var request = requestBuilder.build()
 
         var left = size
-        val filterRegex = filter?.let { Regex(it) }
         val totalResult = mutableListOf<KafkaSchemaInfo>()
         while (true) {
             if (left == 0)
@@ -98,7 +98,7 @@ class BdtGlueRegistryClient(
 
             val response = client.listSchemas(request)
             val schemas = response.schemas()
-                .filter { filterRegex == null || it.schemaName().contains(filterRegex) }
+                .filter { ClusterDataFilters.matchesName(it.schemaName(), filter) }
                 .filter { !it.schemaName().endsWith("/") }
                 .map {
                     val schemaName = it.schemaName()

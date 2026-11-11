@@ -23,6 +23,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Organization-level manager for Confluent Cloud.
@@ -42,8 +43,10 @@ class CCloudOrgManager(
 
     override val client = ControlPlaneCache(project).also { Disposer.register(this, it) }
 
-    private val dataPlaneCache = mutableMapOf<String, DataPlaneCache>()
-    private val clusterDataManagers = mutableMapOf<String, CCloudClusterDataManager>()
+    // Several threads ask for these at once (pre-fetching runs clusters in parallel, the UI asks too). Creating
+    // one connects it and registers it for disposal, so each must be created exactly once: use computeIfAbsent.
+    private val dataPlaneCache = ConcurrentHashMap<String, DataPlaneCache>()
+    private val clusterDataManagers = ConcurrentHashMap<String, CCloudClusterDataManager>()
 
     init {
         init()
@@ -52,10 +55,10 @@ class CCloudOrgManager(
     }
 
     fun getDataPlaneCache(cluster: Cluster): DataPlaneCache =
-        dataPlaneCache.getOrPut(cluster.id) {
-            DataPlaneCache(cluster, findSchemaRegistryForCluster(cluster)).also {
-                it.connect()
-                Disposer.register(this, it)
+        dataPlaneCache.computeIfAbsent(cluster.id) {
+            DataPlaneCache(cluster, findSchemaRegistryForCluster(cluster)).also { cache ->
+                cache.connect()
+                Disposer.register(this, cache)
             }
         }
 
@@ -123,11 +126,12 @@ class CCloudOrgManager(
     }
 
     fun getOrCreateClusterDataManager(cluster: Cluster): CCloudClusterDataManager =
-        clusterDataManagers.getOrPut(cluster.id) {
-            CCloudClusterDataManager(project, this, cluster).also { Disposer.register(this, it) }
+        clusterDataManagers.computeIfAbsent(cluster.id) {
+            CCloudClusterDataManager(project, this, cluster).also { manager -> Disposer.register(this, manager) }
         }
 
-    fun getAllClusterDataManagers(): Collection<CCloudClusterDataManager> = clusterDataManagers.values
+    /** A snapshot: callers iterate it while other threads may create more cluster data managers. */
+    fun getAllClusterDataManagers(): Collection<CCloudClusterDataManager> = clusterDataManagers.values.toList()
 
     /** Finds Schema Registry for the cluster's environment (uses cached data only). */
     private fun findSchemaRegistryForCluster(cluster: Cluster): SchemaRegistry? =

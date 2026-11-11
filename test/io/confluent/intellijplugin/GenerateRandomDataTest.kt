@@ -10,9 +10,14 @@ import io.confluent.kafka.schemaregistry.json.JsonSchema
 import io.confluent.kafka.schemaregistry.json.JsonSchemaUtils
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchema
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchemaUtils
+import org.apache.avro.Conversions
+import org.apache.avro.generic.GenericFixed
+import org.apache.avro.generic.GenericRecord
 import org.junit.jupiter.api.Assertions.assertDoesNotThrow
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.*
 
@@ -64,6 +69,43 @@ internal class GenerateRandomDataTest {
 
             assertNotEquals("", generatedJson2)
             assertNotNull(AvroSchemaUtils.toObject(generatedJson2, avroSchema2))
+        }
+    }
+
+    @Test
+    fun testGenerateAvroDecimalAsFixed() {
+        // The size of the fixed is bigger than the digits of the decimal need, and the value is negative half of the time.
+        val schema = AvroSchema(
+            """{"type":"record","name":"Money","fields":[
+                {"name":"amount","type":{"type":"fixed","name":"Amount","size":8,"logicalType":"decimal","precision":10,"scale":3}},
+                {"name":"tight","type":{"type":"fixed","name":"Tight","size":5,"logicalType":"decimal","precision":10,"scale":0}}]}"""
+        )
+
+        repeat(200) {
+            val generated = AvroGenerator.generateAvroMessage(null, schema)
+
+            assertNotEquals("", generated)
+            val record = AvroSchemaUtils.toObject(generated, schema) as GenericRecord
+            assertEquals(8, (record.get("amount") as GenericFixed).bytes().size)
+            assertEquals(5, (record.get("tight") as GenericFixed).bytes().size)
+        }
+    }
+
+    @Test
+    fun testGenerateAvroDecimalAsFixedKeepsItsValue() {
+        val schema = AvroSchema(
+            """{"type":"fixed","name":"Amount","size":8,"logicalType":"decimal","precision":10,"scale":3}"""
+        )
+        val decimals = Conversions.DecimalConversion()
+        val type = schema.rawSchema().logicalType
+
+        repeat(200) {
+            val fixed = AvroSchemaUtils.toObject(AvroGenerator.generateAvroMessage(null, schema), schema) as GenericFixed
+
+            // Sign extension keeps the number, so it is the number a decimal of 10 digits can be.
+            val value = decimals.fromFixed(fixed, schema.rawSchema(), type)
+            assertTrue(value.precision() <= 10, value.toString())
+            assertEquals(3, value.scale())
         }
     }
 

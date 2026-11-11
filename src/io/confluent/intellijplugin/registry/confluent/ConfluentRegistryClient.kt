@@ -9,9 +9,10 @@ import io.confluent.intellijplugin.core.connection.exception.BdtConfigurationExc
 import io.confluent.intellijplugin.core.connection.tunnel.BdtSshTunnelService
 import io.confluent.intellijplugin.core.rfs.driver.runBlockingInterruptible
 import io.confluent.intellijplugin.core.settings.components.BdtPropertyComponent
-import io.confluent.intellijplugin.data.KafkaDataManager.Companion.sortedSchemas
+import io.confluent.intellijplugin.core.util.toPresentableText
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
+import io.confluent.intellijplugin.registry.SchemaUsage
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
 import io.confluent.intellijplugin.rfs.KafkaConnectionData
@@ -20,45 +21,79 @@ import io.confluent.kafka.schemaregistry.ParsedSchema
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClientConfig
 import io.confluent.kafka.schemaregistry.client.rest.RestService
+import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig
 import org.apache.kafka.common.config.ConfigDef
+import java.net.HttpURLConnection
 
-class ConfluentRegistryClient(restService: RestService, props: Map<String, String>) : Disposable {
+class ConfluentRegistryClient(private val restService: RestService, props: Map<String, String>) : Disposable {
     val internalClient = CachedSchemaRegistryClient(
         restService,
-        100,
+        SCHEMA_CACHE_CAPACITY,
         KafkaRegistryUtil.getRegistrySchemaProviders(),
         props, null
     )
 
     override fun dispose() {}
 
+    /**
+     * Checks that the registry answers and lets us list its subjects, with one subject. The connection is checked every
+     * time it is connected or refreshed, and listing all subjects of a registry with thousands takes seconds.
+     * A registry that does not accept the page parameters is checked with all subjects, as it always was.
+     */
     fun checkConnection() {
         runBlockingInterruptible {
-            internalClient.getAllSubjects()
+            try {
+                restService.getAllSubjectsWithPagination(0, 1)
+            } catch (e: RestClientException) {
+                if (e.status !in QUERY_PARAMETERS_REFUSED) throw e
+                internalClient.getAllSubjects()
+            }
         }
     }
 
-    fun listSchemas(
-        limit: Int?,
-        filter: String?,
-        registryShowDeletedSubjects: Boolean,
-        connectionId: String
-    ): Pair<List<KafkaSchemaInfo>, Boolean> {
-        val names =
-            internalClient.getAllSubjects(registryShowDeletedSubjects)?.sortedBy { it.lowercase() } ?: emptyList()
-        val regex = filter?.let { Regex(it) }
-        val filteredNames = names.filter { regex == null || it.contains(regex) }.filter { !it.endsWith("/") }
-        return filteredNames.map { KafkaSchemaInfo(it) }.sortedSchemas(connectionId).take(
-            limit ?: Int.MAX_VALUE
-        ) to (limit != null && names.size > limit)
+    /**
+     * The subjects of the registry, in the order of their names regardless of the case. A name that ends with a slash
+     * is no schema, so it is left out. What the tool window shows of them is decided by its settings, not here.
+     */
+    fun listSchemas(registryShowDeletedSubjects: Boolean = false): List<KafkaSchemaInfo> =
+        toSchemas(internalClient.getAllSubjects(registryShowDeletedSubjects))
+
+    /**
+     * The subjects of the registry that start with [prefix], listed like [listSchemas] does. The registry only
+     * answers with those, which is a fraction of listing them all. `null` if it does not accept the parameter of the
+     * request, or does not know it and lists all subjects: the caller can list all subjects then.
+     */
+    fun listSchemasByPrefix(prefix: String, registryShowDeletedSubjects: Boolean = false): List<KafkaSchemaInfo>? = try {
+        val subjects = restService.getAllSubjects(prefix, registryShowDeletedSubjects)
+        // A registry that does not know the parameter answers with all its subjects, which is no listing of the prefix
+        // and not the fraction of the work either. Asking it again for another prefix would cost all that again.
+        if (subjects.orEmpty().any { !it.startsWith(prefix) }) null else toSchemas(subjects)
+    } catch (e: RestClientException) {
+        if (e.status in QUERY_PARAMETERS_REFUSED) null else throw e
+    }
+
+    private fun toSchemas(subjects: Collection<String>?): List<KafkaSchemaInfo> =
+        (subjects ?: emptyList())
+            .filter { !it.endsWith("/") }
+            .sortedBy { it.lowercase() }
+            .map { KafkaSchemaInfo(it) }
+
+    /**
+     * The subjects, and the versions of them, that the schema with the ID the registry gave it is registered as.
+     * A schema that is registered under several subjects has one ID. Nothing for an ID the registry does not know.
+     */
+    fun listSchemaUsages(schemaId: Int): List<SchemaUsage> = try {
+        restService.getAllVersionsById(schemaId).map { SchemaUsage(it.subject, it.version) }
+    } catch (e: RestClientException) {
+        if (e.status == HttpURLConnection.HTTP_NOT_FOUND) emptyList() else throw e
     }
 
     fun loadSchemaInfo(schemaName: String): KafkaSchemaInfo {
         val meta = try {
             internalClient.getLatestSchemaMetadata(schemaName)
         } catch (t: Throwable) {
-            thisLogger().info("Cannot request schemaMeta for $schemaName")
+            logLoadFailure(schemaName, t)
             null
         }
         meta ?: return KafkaSchemaInfo.createEmpty(schemaName)
@@ -118,6 +153,16 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
         )
     }
 
+    // A subject that is gone is no news; anything else points at a problem with the registry or the credentials.
+    private fun logLoadFailure(schemaName: String, t: Throwable) {
+        if ((t as? RestClientException)?.status == HttpURLConnection.HTTP_NOT_FOUND) {
+            thisLogger().info("Schema '$schemaName' was not found")
+        } else {
+            thisLogger().warn("Cannot request schemaMeta for $schemaName: ${t.toPresentableText()}")
+            thisLogger().debug(t)
+        }
+    }
+
     companion object {
         // Same values as the library defaults, made explicit; user-supplied registry properties override these.
         internal val DEFAULT_HTTP_PROPS = mapOf(
@@ -131,6 +176,15 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
             brokerSsl: Map<String, String>,
             registryProps: Map<String, String>,
         ): Map<String, String> = DEFAULT_HTTP_PROPS + brokerSettings + brokerSsl + registryProps
+
+        /**
+         * How many schemas the client remembers. It was 100, which is too small for a registry with more
+         * subjects: going through them (e.g. to find out their formats) then requested every subject again and again.
+         */
+        private const val SCHEMA_CACHE_CAPACITY = 1000
+
+        // What a registry answers when it does not know a parameter of a request for the subjects, e.g. the page.
+        private val QUERY_PARAMETERS_REFUSED = setOf(HttpURLConnection.HTTP_BAD_REQUEST, 422)
 
         fun createFor(project: Project?, connectionData: KafkaConnectionData, testConnection: Boolean) =
             createConfluentClient(connectionData, project, testConnection)

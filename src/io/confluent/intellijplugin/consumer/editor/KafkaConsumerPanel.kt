@@ -27,6 +27,8 @@ import io.confluent.intellijplugin.consumer.client.ConsumerClientProvider
 import io.confluent.intellijplugin.consumer.models.*
 import io.confluent.intellijplugin.core.rfs.util.RfsNotificationUtils
 import io.confluent.intellijplugin.core.settings.getValidationInfo
+import io.confluent.intellijplugin.core.settings.revalidateComponent
+import io.confluent.intellijplugin.core.settings.withValidator
 import io.confluent.intellijplugin.core.ui.CustomListCellRenderer
 import io.confluent.intellijplugin.core.ui.ExpansionPanel
 import io.confluent.intellijplugin.core.ui.MultiSplitter
@@ -82,7 +84,7 @@ class KafkaConsumerPanel(
         if (useWebViewMessageViewer) {
             thisLogger().info("WebView message viewer flag enabled, but implementation not ready. Using default viewer.")
         }
-        return KafkaRecordsOutput(project, isProducer = false)
+        return KafkaRecordsOutput(project, isProducer = false, schemaUsages = kafkaManager)
     }
 
     private val startSpecificDate = TimestampTextField(this)
@@ -132,6 +134,7 @@ class KafkaConsumerPanel(
     private val filterValueField = JBTextField()
     private val filterHeadKeyField = JBTextField()
     private val filterHeadValueField = JBTextField()
+    private val filterTextFields = listOf(filterKeyField, filterValueField, filterHeadKeyField, filterHeadValueField)
 
     private val partitionField = JBTextField()
     private val consumerGroup = KafkaEditorUtils.createConsumerGroups(this, kafkaManager, withEmpty = true).apply {
@@ -174,6 +177,7 @@ class KafkaConsumerPanel(
                             } else {
                                 val validationInfo = topicComboBox.getValidationInfo() ?: key.getValidationInfo()
                                 ?: value.getValidationInfo()
+                                ?: filterTextFields.firstNotNullOfOrNull { it.getValidationInfo() }
                                 if (validationInfo != null) {
                                     progress.onValidationError()
                                     return@executeNotOnEdtSuspend
@@ -320,6 +324,13 @@ class KafkaConsumerPanel(
     init {
         Disposer.register(this, consumerClient)
 
+        // A pattern that does not compile would fail on the first record only, long after the start.
+        filterTextFields.forEach { field ->
+            field.withValidator(this) { text ->
+                if (filterComboBox.item == ConsumerFilterType.REGEX) ConsumerFilter.regexProblem(text) else null
+            }
+        }
+
         restoreFromFile()
 
         presetsSplitter.proportionsKey = "kafka.consumer.multisplitter.proportions"
@@ -359,6 +370,8 @@ class KafkaConsumerPanel(
     }
 
     private suspend fun startConsume(project: Project?) {
+        key.resolveSchemaFormat()
+        value.resolveSchemaFormat()
         val runConfig = getRunConfig()
 
         if (runConfig.topic.isNullOrBlank()) {
@@ -549,6 +562,8 @@ class KafkaConsumerPanel(
 
     private fun updateFilter() {
         filterPanelBlock.set(filterComboBox.selectedItem != ConsumerFilterType.NONE)
+        // Whether a text is fine depends on the type, so a changed type can fix or break the texts.
+        filterTextFields.forEach { it.revalidateComponent() }
     }
 
     private fun updateLimit() {

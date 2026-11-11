@@ -3,6 +3,11 @@ package io.confluent.intellijplugin.consumer.editor
 import com.intellij.testFramework.junit5.TestApplication
 import io.confluent.intellijplugin.common.models.KafkaFieldType
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
+import io.confluent.intellijplugin.registry.RecordSchema
+import io.confluent.intellijplugin.registry.SchemaIdHeaders
+import io.confluent.kafka.serializers.schema.id.SchemaId
+import org.apache.avro.Schema
+import org.apache.avro.generic.GenericData
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.internals.RecordHeader
 import org.apache.kafka.common.header.internals.RecordHeaders
@@ -60,8 +65,8 @@ class KafkaRecordTest {
                 KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.UNKNOWN,
                 Result.success(rec)
             )
-            assertEquals("k1", kafkaRecord.key)
-            assertEquals("v1", kafkaRecord.value)
+            assertEquals("k1", kafkaRecord.keyText)
+            assertEquals("v1", kafkaRecord.valueText)
         }
 
         @Test
@@ -158,14 +163,14 @@ class KafkaRecordTest {
         }
 
         @Test
-        fun `should set key and value to null for failed records`() {
+        fun `should set key and value text to null for failed records`() {
             val kafkaRecord = KafkaRecord.createFor(
                 KafkaFieldType.STRING, KafkaFieldType.STRING,
                 KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.UNKNOWN,
                 Result.failure(RuntimeException("fail"))
             )
-            assertNull(kafkaRecord.key)
-            assertNull(kafkaRecord.value)
+            assertNull(kafkaRecord.keyText)
+            assertNull(kafkaRecord.valueText)
         }
 
         @Test
@@ -292,6 +297,164 @@ class KafkaRecordTest {
             )
             // KafkaEditorUtils.getValueAsString returns "" when value is null
             assertEquals("", kafkaRecord.keyText)
+        }
+    }
+
+    @Nested
+    @DisplayName("Retained memory")
+    inner class RetainedMemory {
+
+        @Test
+        fun `should render a deserialized Avro record to text when the record is created`() {
+            val schema = Schema.Parser().parse(
+                """{"type":"record","name":"Person","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}"""
+            )
+            val avro = GenericData.Record(schema).apply {
+                put("name", "Ada")
+                put("age", 36)
+            }
+
+            val kafkaRecord = KafkaRecord.createFor(
+                KafkaFieldType.STRING, KafkaFieldType.SCHEMA_REGISTRY,
+                KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.AVRO,
+                Result.success(consumerRecord(value = avro))
+            )
+
+            val text = kafkaRecord.valueText!!
+            assertTrue(text.contains("\"name\""), text)
+            assertTrue(text.contains("Ada"), text)
+            assertTrue(text.contains("36"), text)
+        }
+
+        @Test
+        fun `should declare no field that could keep the deserialized key or value alive`() {
+            val untypedFields = KafkaRecord::class.java.declaredFields
+                .filter { it.type == Any::class.java }
+                .map { it.name }
+
+            assertEquals(emptyList<String>(), untypedFields)
+        }
+    }
+
+    @Nested
+    @DisplayName("Schema of the record")
+    inner class SchemaOfTheRecord {
+
+        private val avro = Schema.Parser().parse(
+            """{"type":"record","name":"Person","fields":[{"name":"name","type":"string"}]}"""
+        )
+
+        private fun person() = GenericData.Record(avro).apply { put("name", "Ada") }
+
+        private fun v0(id: Int) = byteArrayOf(0, (id shr 24).toByte(), (id shr 16).toByte(), (id shr 8).toByte(), id.toByte(), 9)
+
+        private fun createFor(
+            keyType: KafkaFieldType,
+            valueType: KafkaFieldType,
+            headers: RecordHeaders
+        ) = KafkaRecord.createFor(
+            keyType, valueType, KafkaRegistryFormat.AVRO, KafkaRegistryFormat.AVRO,
+            Result.success(consumerRecord(key = person(), value = person(), headers = headers))
+        )
+
+        @Test
+        fun `should tell the schema IDs of a key and a value that use the registry`() {
+            val headers = RecordHeaders()
+            SchemaIdHeaders.record(headers, isKey = true, payload = v0(11))
+            SchemaIdHeaders.record(headers, isKey = false, payload = v0(22))
+
+            val record = createFor(KafkaFieldType.SCHEMA_REGISTRY, KafkaFieldType.SCHEMA_REGISTRY, headers)
+
+            assertEquals(RecordSchema(id = 11), record.keySchema)
+            assertEquals(RecordSchema(id = 22), record.valueSchema)
+        }
+
+        @Test
+        fun `should tell the schema of the value alone when the key does not use the registry`() {
+            val headers = RecordHeaders()
+            SchemaIdHeaders.record(headers, isKey = false, payload = v0(22))
+
+            val record = createFor(KafkaFieldType.STRING, KafkaFieldType.SCHEMA_REGISTRY, headers)
+
+            assertNull(record.keySchema)
+            assertEquals(RecordSchema(id = 22), record.valueSchema)
+        }
+
+        @Test
+        fun `should tell the GUID of a schema that the producer wrote into the headers`() {
+            val guid = UUID.randomUUID()
+            val header = java.nio.ByteBuffer.allocate(17).put(1)
+                .putLong(guid.mostSignificantBits).putLong(guid.leastSignificantBits).array()
+            val headers = RecordHeaders(listOf(RecordHeader(SchemaId.VALUE_SCHEMA_ID_HEADER, header)))
+
+            val record = createFor(KafkaFieldType.STRING, KafkaFieldType.SCHEMA_REGISTRY, headers)
+
+            assertEquals(RecordSchema(guid = guid), record.valueSchema)
+        }
+
+        @Test
+        fun `should tell nothing about a schema when the record says nothing`() {
+            val record = createFor(KafkaFieldType.SCHEMA_REGISTRY, KafkaFieldType.SCHEMA_REGISTRY, RecordHeaders())
+
+            assertNull(record.keySchema)
+            assertNull(record.valueSchema)
+        }
+
+        @Test
+        fun `should not tell a schema for a key or value that is not read with the registry`() {
+            val headers = RecordHeaders()
+            SchemaIdHeaders.record(headers, isKey = true, payload = v0(11))
+            SchemaIdHeaders.record(headers, isKey = false, payload = v0(22))
+            headers.add(SchemaId.VALUE_SCHEMA_ID_HEADER, ByteArray(17).also { it[0] = 1 })
+
+            val record = createFor(KafkaFieldType.STRING, KafkaFieldType.BASE64, headers)
+
+            assertNull(record.keySchema)
+            assertNull(record.valueSchema)
+        }
+
+        @Test
+        fun `should leave what was noted for the schema out of the headers`() {
+            val headers = RecordHeaders()
+            headers.add("trace", "t1".toByteArray())
+            SchemaIdHeaders.record(headers, isKey = true, payload = v0(11))
+            SchemaIdHeaders.record(headers, isKey = false, payload = v0(22))
+
+            val record = createFor(KafkaFieldType.SCHEMA_REGISTRY, KafkaFieldType.SCHEMA_REGISTRY, headers)
+
+            assertEquals(listOf("trace"), record.headers.map { it.name })
+        }
+
+        @Test
+        fun `should keep a header of the producer that carries the schema`() {
+            val headers = RecordHeaders(listOf(RecordHeader(SchemaId.VALUE_SCHEMA_ID_HEADER, ByteArray(17).also { it[0] = 1 })))
+
+            val record = createFor(KafkaFieldType.STRING, KafkaFieldType.STRING, headers)
+
+            assertEquals(listOf(SchemaId.VALUE_SCHEMA_ID_HEADER), record.headers.map { it.name })
+        }
+
+        @Test
+        fun `should tell no schema for a record that failed`() {
+            val record = KafkaRecord.createFor(
+                KafkaFieldType.SCHEMA_REGISTRY, KafkaFieldType.SCHEMA_REGISTRY,
+                KafkaRegistryFormat.AVRO, KafkaRegistryFormat.AVRO,
+                Result.failure(IllegalStateException("boom"))
+            )
+
+            assertNull(record.keySchema)
+            assertNull(record.valueSchema)
+        }
+
+        @Test
+        fun `should tell no schema for a record the producer wrote`() {
+            val record = KafkaRecord(
+                KafkaFieldType.STRING, KafkaFieldType.STRING, null, "k", "v", "t", 0, 1, 2, 3, 1, 1,
+                emptyList(), KafkaRegistryFormat.UNKNOWN, KafkaRegistryFormat.UNKNOWN
+            )
+
+            assertNull(record.keySchema)
+            assertNull(record.valueSchema)
         }
     }
 }

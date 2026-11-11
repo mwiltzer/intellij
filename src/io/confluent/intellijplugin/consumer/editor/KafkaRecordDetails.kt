@@ -5,11 +5,13 @@ import com.intellij.ide.IdeBundle
 import com.intellij.json.JsonLanguage
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.runWriteAction
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.fileTypes.PlainTextLanguage
 import com.intellij.openapi.observable.properties.AtomicProperty
 import com.intellij.openapi.observable.util.isNull
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.writeBytes
 import com.intellij.ui.IdeBorderFactory
 import com.intellij.ui.SideBorder
@@ -29,8 +31,13 @@ import io.confluent.intellijplugin.core.ui.DarculaTextAreaBorder
 import io.confluent.intellijplugin.core.ui.chooser.FileChooserUtil
 import io.confluent.intellijplugin.core.util.SizeUtils
 import io.confluent.intellijplugin.core.util.TimeUtils
+import io.confluent.intellijplugin.data.SchemaUsageSource
 import io.confluent.intellijplugin.registry.ui.KafkaRegistrySchemaEditor
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Dimension
@@ -39,7 +46,11 @@ import java.util.*
 import javax.swing.*
 import kotlin.math.max
 
-internal class KafkaRecordDetails(project: Project, parentDisposable: Disposable) {
+internal class KafkaRecordDetails(
+    project: Project,
+    parentDisposable: Disposable,
+    schemaUsages: SchemaUsageSource? = null
+) {
 
     companion object {
         private const val MIN_EDITOR_HEIGHT = 50
@@ -79,6 +90,19 @@ internal class KafkaRecordDetails(project: Project, parentDisposable: Disposable
 
     private val keyTypeLabel = SelectableLabel("")
     private val valueTypeLabel = SelectableLabel("")
+
+    // What the record says about the schemas it was written with. A row is shown only when it says something.
+    private val keySchemaLabel = SelectableLabel("")
+    private val valueSchemaLabel = SelectableLabel("")
+
+    // The registry is asked while the details are open, and not any more when they are closed.
+    private val schemaScope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scope ->
+        Disposer.register(parentDisposable) { scope.cancel() }
+    }
+    private val keySchemaDescriber =
+        RecordSchemaDescriber(schemaScope, schemaUsages, Dispatchers.EDT) { keySchemaLabel.text = it }
+    private val valueSchemaDescriber =
+        RecordSchemaDescriber(schemaScope, schemaUsages, Dispatchers.EDT) { valueSchemaLabel.text = it }
 
     private val error = AtomicProperty<String?>(null)
 
@@ -186,6 +210,10 @@ internal class KafkaRecordDetails(project: Project, parentDisposable: Disposable
                 row(KafkaMessagesBundle.message("consumer.record.valuesize")) { cell(valueSize).align(AlignX.FILL) }
                 row(KafkaMessagesBundle.message("label.key.type")) { cell(keyTypeLabel).align(AlignX.FILL) }
                 row(KafkaMessagesBundle.message("label.value.type")) { cell(valueTypeLabel).align(AlignX.FILL) }
+                row(KafkaMessagesBundle.message("consumer.record.keyschema")) { cell(keySchemaLabel).align(AlignX.FILL) }
+                    .visibleIf(keySchemaLabel.enteredTextSatisfies { it.isNotEmpty() })
+                row(KafkaMessagesBundle.message("consumer.record.valueschema")) { cell(valueSchemaLabel).align(AlignX.FILL) }
+                    .visibleIf(valueSchemaLabel.enteredTextSatisfies { it.isNotEmpty() })
             }
 
         metainfoGroup.expanded = false
@@ -256,6 +284,8 @@ internal class KafkaRecordDetails(project: Project, parentDisposable: Disposable
             // Key and value Fields could contain multiline JSON
             detailsPanel.revalidate()
         }
+        keySchemaDescriber.describe(row?.keySchema, row?.topic)
+        valueSchemaDescriber.describe(row?.valueSchema, row?.topic)
     }
 
     private fun updateLinkRow(

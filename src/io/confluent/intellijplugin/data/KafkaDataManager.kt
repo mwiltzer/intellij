@@ -3,15 +3,12 @@ package io.confluent.intellijplugin.data
 import com.intellij.CommonBundle
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.progress.ProcessCanceledException
-import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import io.confluent.intellijplugin.client.BdtKafkaMapper
 import io.confluent.intellijplugin.client.KafkaClient
-import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.core.connection.updater.IntervalUpdateSettings
 import io.confluent.intellijplugin.core.monitoring.data.storage.RootDataModelStorage
 import io.confluent.intellijplugin.core.monitoring.rfs.MonitoringDriver
@@ -21,16 +18,20 @@ import io.confluent.intellijplugin.core.rfs.driver.manager.DriverManager
 import io.confluent.intellijplugin.core.rfs.util.RfsNotificationUtils
 import io.confluent.intellijplugin.core.util.runAsync
 import io.confluent.intellijplugin.core.util.runAsyncSuspend
+import io.confluent.intellijplugin.core.util.toPresentableText
 import io.confluent.intellijplugin.model.*
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil.asSchemaWritePromise
+import io.confluent.intellijplugin.registry.SchemaUsage
 import io.confluent.intellijplugin.registry.SchemaVersionInfo
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
+import io.confluent.intellijplugin.registry.common.hasLoadedDetails
 import io.confluent.intellijplugin.rfs.KafkaConnectionData
 import io.confluent.intellijplugin.rfs.KafkaDriver
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
+import io.confluent.intellijplugin.util.catchFailures
 import io.confluent.kafka.schemaregistry.ParsedSchema
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -40,9 +41,7 @@ import kotlinx.coroutines.withContext
 import org.apache.kafka.clients.consumer.OffsetAndMetadata
 import org.apache.kafka.common.TopicPartition
 import org.jetbrains.concurrency.Promise
-import org.jetbrains.concurrency.await
 import software.amazon.awssdk.services.glue.model.Compatibility
-import java.util.concurrent.ConcurrentSkipListMap
 
 /**
  * Data manager for Kafka connections using AdminClient protocol.
@@ -68,8 +67,6 @@ class KafkaDataManager(
     override fun getSchemaPath(schemaName: String): RfsPath {
         return KafkaDriver.schemasPath.child(schemaName, false)
     }
-
-    private val schemaTypeCache = ConcurrentSkipListMap<String, KafkaRegistryFormat>()
 
     init {
         init()
@@ -148,30 +145,29 @@ class KafkaDataManager(
         }.distinct()
     }
 
-    override suspend fun listSchemasNames(limit: Int?, filter: String?): Pair<List<KafkaSchemaInfo>, Boolean> {
-        return client.confluentRegistryClient?.listSchemas(limit, filter, false, connectionId)
-            ?: client.glueRegistryClient?.listSchemas(limit, filter, connectionId)
-            ?: (emptyList<KafkaSchemaInfo>() to false)
+    override suspend fun listSchemasNames(): List<KafkaSchemaInfo> =
+        client.confluentRegistryClient?.listSchemas()
+            ?: client.glueRegistryClient?.listSchemas(filter = null)?.first
+            ?: emptyList()
+
+    // Only a Confluent registry can leave out the schemas that do not start with a prefix.
+    override suspend fun listSchemasNamesByPrefix(prefix: String): List<KafkaSchemaInfo>? =
+        client.confluentRegistryClient?.let { registry ->
+            withContext(Dispatchers.IO) { registry.listSchemasByPrefix(prefix) }
+        }
+
+    override suspend fun listVisibleTopicNames(): Set<String>? = withContext(Dispatchers.IO) {
+        client.getVisibleTopicNames()
     }
 
     override suspend fun updateSchemaList(
         schemas: List<KafkaSchemaInfo>
     ): Pair<List<KafkaSchemaInfo>, Throwable?> = withContext(Dispatchers.IO) {
-        try {
-            schemaTypeCache.clear()
-            val loadedInfo = schemas.map {
-                runAsyncSuspend {
-                    try {
-                        loadSchema(it.name)
-                    } catch (t: Throwable) {
-                        thisLogger().warn(t)
-                        it
-                    }
-                }
-            }.map { it.await() }
-            loadedInfo to null
-        } catch (t: Throwable) {
-            schemas.map { it.copy(type = null, version = null) } to t
+        // A few requests at a time instead of one for every schema at once. The resolver also keeps the
+        // formats it learns here, so the editors do not have to ask for them again.
+        catchFailures(onFailure = { t -> schemas.map { it.copy(type = null, version = null) } to t }) {
+            val loaded = schemaFormats.refreshAll(schemas.map { it.name })
+            schemas.map { loaded[it.name] ?: it } to null
         }
     }
 
@@ -179,6 +175,18 @@ class KafkaDataManager(
         return client.confluentRegistryClient?.listSchemaVersions(schemaName)
             ?: client.glueRegistryClient?.listSchemaVersions(schemaName)
             ?: emptyList()
+    }
+
+    override suspend fun loadSchemaUsages(schemaId: Int): List<SchemaUsage>? {
+        val registry = client.confluentRegistryClient ?: return null
+        return withContext(Dispatchers.IO) {
+            catchFailures<List<SchemaUsage>?>(onFailure = { t ->
+                thisLogger().info("Cannot look up the schema with ID $schemaId: ${t.toPresentableText()}")
+                null
+            }) {
+                registry.listSchemaUsages(schemaId)
+            }
+        }
     }
 
     @RequiresBackgroundThread
@@ -197,29 +205,6 @@ class KafkaDataManager(
 
     @RequiresBackgroundThread
     override suspend fun loadTopicInfo(name: String) = client.getDetailedTopicsInfo(listOf(name)).first()
-
-    @RequiresBackgroundThread
-    override fun getSchemasForEditor() = try {
-        val (schemas, _) = client.confluentRegistryClient?.listSchemas(null, null, false, connectionId)
-            ?: client.glueRegistryClient?.listSchemas(null, null, connectionId)
-            ?: (emptyList<KafkaSchemaInfo>() to false)
-        schemas.map {
-            val schemaFormat = it.type
-                ?: runBlockingMaybeCancellable { getCachedOrLoadSchemaType(it.name) }
-                ?: KafkaRegistryFormat.UNKNOWN
-            RegistrySchemaInEditor(
-                schemaName = it.name,
-                schemaFormat = schemaFormat
-            )
-        }.sorted()
-    } catch (e: ProcessCanceledException) {
-        throw e  // Re-throw cancellation to preserve IDE cancellation semantics
-    } catch (e: CancellationException) {
-        throw e  // Re-throw coroutine cancellation
-    } catch (e: Exception) {
-        thisLogger().warn(e)
-        emptyList()
-    }
 
     override fun getSchemaVersionInfo(schemaName: String, version: Long): Promise<SchemaVersionInfo> = runAsync {
         client.glueRegistryClient?.getSchemaVersionInfo(schemaName, version)
@@ -304,7 +289,8 @@ class KafkaDataManager(
         withContext(Dispatchers.IO) {
             client.confluentRegistryClient?.deleteSchema(schemaName, permanent)
                 ?: client.glueRegistryClient?.deleteSchema(schemaName)
-            schemaTypeCache.remove(schemaName)
+            schemaFormats.remove(schemaName)
+            invalidateSchemaNames()
             updater.invokeRefreshModel(schemaVersionModels[schemaName])
             schemaRegistryModel?.let { updater.invokeRefreshModel(it) }
         }
@@ -319,18 +305,17 @@ class KafkaDataManager(
                 "",
                 emptyMap()
             )
-        schemaTypeCache[schemaName] = KafkaRegistryFormat.parse(parsedSchema.schemaType())
+        schemaFormats.put(schemaName, KafkaRegistryFormat.parse(parsedSchema.schemaType()))
+        invalidateSchemaNames()
         schemaRegistryModel?.let { updater.invokeRefreshModel(it) }
         updater.invokeRefreshModel(schemaVersionModels[schemaName])
     }
 
+    // Entries that only carry a name (the registry model fills in the details later) are not good enough here.
     override suspend fun getCachedOrLoadSchema(name: String): KafkaSchemaInfo =
-        getCachedSchema(name)?.takeIf { !it.isSoftDeleted } ?: loadSchema(name)
+        getCachedSchema(name)?.takeIf { it.hasLoadedDetails() } ?: loadSchema(name)
 
-    private suspend fun getCachedOrLoadSchemaType(name: String): KafkaRegistryFormat? =
-        schemaTypeCache[name] ?: getCachedOrLoadSchema(name).type?.also {
-            schemaTypeCache[name] = it
-        }
+    override suspend fun loadSchemaDetails(name: String): KafkaSchemaInfo = loadSchema(name)
 
     private suspend fun loadSchema(schemaName: String): KafkaSchemaInfo = withContext(Dispatchers.IO) {
         client.confluentRegistryClient?.loadSchemaInfo(schemaName)
@@ -520,10 +505,6 @@ class KafkaDataManager(
             thisLogger().warn("Failed to clear topic '$topicName'", e)
             Result.failure(e)
         }
-    }
-
-    override fun dispose() {
-        schemaTypeCache.clear()
     }
 
     companion object {

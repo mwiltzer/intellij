@@ -369,11 +369,13 @@ class KafkaProducerEditor(
         key = keyFieldComponent.getValueText(),
         keyFormat = keyFieldComponent.schemaComboBox.item?.schemaFormat?.toString() ?: "",
         keySubject = keyFieldComponent.schemaComboBox.item?.schemaName ?: "",
+        keyVersion = keyFieldComponent.selectedSchemaVersion(),
 
         valueType = valueFieldComponent.fieldTypeComboBox.item?.name ?: "",
         value = valueFieldComponent.getValueText(),
         valueFormat = valueFieldComponent.schemaComboBox.item?.schemaFormat?.toString() ?: "",
         valueSubject = valueFieldComponent.schemaComboBox.item?.schemaName ?: "",
+        valueVersion = valueFieldComponent.selectedSchemaVersion(),
 
         properties = propertiesComponent.properties,
         compression = compressionComboBox.item?.name ?: "",

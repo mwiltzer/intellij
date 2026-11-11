@@ -57,6 +57,9 @@ interface DataPlaneFetcher {
     /** Get schema by global ID. */
     suspend fun getSchemaIdInfo(schemaId: Int): SchemaByIdResponse
 
+    /** Get the subjects, and their versions, that a schema with this global ID is registered as. */
+    suspend fun getSchemaVersionsById(schemaId: Int): List<SubjectVersionResponse>
+
     /** Register a new schema or new version of existing schema. */
     suspend fun createSchema(schemaName: String, request: RegisterSchemaRequest): RegisterSchemaResponse
 

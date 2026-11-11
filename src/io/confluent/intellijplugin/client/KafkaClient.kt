@@ -18,6 +18,7 @@ import io.confluent.intellijplugin.core.util.BdIdeRegistryUtil
 import io.confluent.intellijplugin.core.util.withPluginClassLoader
 import io.confluent.intellijplugin.model.*
 import io.confluent.intellijplugin.registry.KafkaRegistryType
+import io.confluent.intellijplugin.registry.common.RegistryConnectionFailure
 import io.confluent.intellijplugin.registry.confluent.ConfluentRegistryClient
 import io.confluent.intellijplugin.registry.confluent.SchemaRegistryOAuthUrls
 import io.confluent.intellijplugin.registry.glue.BdtGlueRegistryClient
@@ -27,6 +28,7 @@ import io.confluent.intellijplugin.rfs.KafkaPropertySource
 import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import io.confluent.intellijplugin.util.KafkaSslUtils
+import io.confluent.intellijplugin.util.timed
 import kotlinx.coroutines.TimeoutCancellationException
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.*
@@ -37,6 +39,7 @@ import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.config.SaslConfigs
 import java.io.File
 import java.util.*
+import java.util.concurrent.ExecutionException
 import kotlin.jvm.optionals.getOrNull
 
 
@@ -53,6 +56,18 @@ class KafkaClient(
     private val kafkaAdminNotNull
         get() = kafkaAdmin ?: error("Kafka Admin Client is not inited")
 
+    private val virtualTopicDetector = VirtualTopicDetector { topicNames ->
+        val resources = topicNames.map { ConfigResource(ConfigResource.Type.TOPIC, it) }
+        // Every topic has its own future, so a topic that may not be described does not fail the others.
+        kafkaAdminNotNull.describeConfigs(resources).values().entries.associate { (resource, future) ->
+            resource.name() to try {
+                Result.success(future.get().entries())
+            } catch (e: ExecutionException) {
+                Result.failure(e.cause ?: e)
+            }
+        }
+    }
+
     var confluentRegistryClient: ConfluentRegistryClient? = null
         private set
 
@@ -68,6 +83,7 @@ class KafkaClient(
 
     override fun connectInner(calledByUser: Boolean) {
         disposeKafkaAdminClient()
+        virtualTopicDetector.clear()
 
         val tunnelData = connectionData.getTunnelData()
         val urls = kafkaProps.getProperty(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG)
@@ -190,6 +206,14 @@ class KafkaClient(
         return topicNames.map { TopicPresentable(name = it) }.sortedTopics()
     }
 
+    /**
+     * The names of all the topics that the cluster lists for the user, internal ones included. Unlike [getTopics],
+     * it does not check which of them are virtual, which takes a request for each of them.
+     */
+    fun getVisibleTopicNames(): Set<String> = thisLogger().timed("Listing the topics the user can see") {
+        kafkaAdminNotNull.listTopics(ListTopicsOptions().listInternal(true)).names().get() ?: emptySet()
+    }
+
     suspend fun getDetailedTopicsInfo(topicNames: List<String>): List<TopicPresentable> {
         val (describedTopics, nonParsed) = describeTopics(topicNames)
 
@@ -309,36 +333,19 @@ class KafkaClient(
     private fun getTopicNames(listInternal: Boolean): List<String> {
         val listTopicsOptions = ListTopicsOptions()
         listTopicsOptions.listInternal(listInternal)
-        val names = kafkaAdminNotNull.listTopics(listTopicsOptions).names().get() ?: emptySet()
+        val names = thisLogger().timed("Listing the topics") {
+            kafkaAdminNotNull.listTopics(listTopicsOptions).names().get() ?: emptySet()
+        }
         val filteredNames = if (listInternal)
             names
         else
             names.filter { !it.startsWith("_") }
         val topicNames = filteredNames.sorted().filter { !it.endsWith("/") }
-        
-        val virtualTopics = getVirtualTopics(topicNames)
-        return topicNames.filterNot { virtualTopics.contains(it) }
-    }
-    
-    private fun getVirtualTopics(topicNames: List<String>): Set<String> {
-        if (topicNames.isEmpty()) return emptySet()
-        val resources = topicNames.map { ConfigResource(ConfigResource.Type.TOPIC, it) }
-        val result = mutableSetOf<String>()
-        try {
-            val configs = kafkaAdminNotNull.describeConfigs(resources).all().get()
-            for ((resource, config) in configs) {
-                val isVirtual = config.entries().any { entry ->
-                    (entry.name() == "confluent.topic.type" && entry.value() == "virtual") ||
-                    (entry.name() == "replication.factor" && entry.value() == "0")
-                }
-                if (isVirtual) {
-                    result.add(resource.name())
-                }
-            }
-        } catch (t: Throwable) {
-            logger.warn("Could not batch check for virtual topics", t)
+
+        val virtualTopics = thisLogger().timed("Checking ${topicNames.size} topics for virtual ones") {
+            virtualTopicDetector.virtualAmong(topicNames)
         }
-        return result
+        return topicNames.filterNot { virtualTopics.contains(it) }
     }
 
     private fun getKafkaProps(connectionData: KafkaConnectionData): Properties {
@@ -410,7 +417,7 @@ class KafkaClient(
             confluentRegistryClient?.checkConnection()
             glueRegistryClient?.checkConnection()
         } catch (t: Throwable) {
-            throw BdtConnectionException(KafkaMessagesBundle.message("connection.kafka.registry.is.not.available"), t)
+            throw BdtConnectionException(RegistryConnectionFailure.describe(t), t)
         }
     }
 

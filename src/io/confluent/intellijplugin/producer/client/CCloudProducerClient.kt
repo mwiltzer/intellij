@@ -21,9 +21,9 @@ import io.confluent.intellijplugin.producer.models.AcksType
 import io.confluent.intellijplugin.producer.models.Mode
 import io.confluent.intellijplugin.producer.models.ProducerFlowParams
 import io.confluent.intellijplugin.producer.models.RecordCompression
+import io.confluent.intellijplugin.registry.AvroJson
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
-import io.confluent.kafka.schemaregistry.avro.AvroSchemaUtils
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchema
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchemaUtils
 import com.google.protobuf.DynamicMessage
@@ -189,20 +189,33 @@ class CCloudProducerClient(
         }
     }
 
-    private suspend fun resolveSchemaCache(
+    @VisibleForTesting
+    internal suspend fun resolveSchemaCache(
         fetcher: DataPlaneFetcher,
         vararg fields: ConsumerProducerFieldConfig
     ): Map<String, SchemaVersionResponse> {
         val cache = ConcurrentHashMap<String, SchemaVersionResponse>()
         for (field in fields) {
             if (field.type == KafkaFieldType.SCHEMA_REGISTRY && field.schemaName.isNotEmpty()) {
-                cache.getOrPut(field.schemaName) {
-                    fetcher.getLatestVersionInfo(field.schemaName)
+                cache.getOrPut(schemaCacheKey(field)) {
+                    fetchSchemaVersion(fetcher, field)
                 }
             }
         }
         return cache
     }
+
+    /** The key and the value of a record may be written with different versions of the same schema. */
+    private fun schemaCacheKey(field: ConsumerProducerFieldConfig): String =
+        field.schemaVersion?.let { "${field.schemaName}@$it" } ?: field.schemaName
+
+    /** The version of the schema that the field chose, or the latest one. */
+    private suspend fun fetchSchemaVersion(
+        fetcher: DataPlaneFetcher,
+        field: ConsumerProducerFieldConfig
+    ): SchemaVersionResponse =
+        field.schemaVersion?.let { fetcher.getSchemaVersionInfo(field.schemaName, it) }
+            ?: fetcher.getLatestVersionInfo(field.schemaName)
 
     private suspend fun produceBatch(
         active: AtomicBoolean,
@@ -250,8 +263,8 @@ class CCloudProducerClient(
                 keyType = recordKey.type,
                 valueType = recordValue.type,
                 error = null,
-                key = recordKey.getValueObj(),
-                value = recordValue.getValueObj(),
+                keyText = KafkaRecord.textOf(recordKey),
+                valueText = KafkaRecord.textOf(recordValue),
                 topic = response.topicName ?: topic,
                 partition = response.partitionId ?: -1,
                 offset = response.offset ?: -1,
@@ -371,22 +384,22 @@ class CCloudProducerClient(
      *
      * Serialize client-side and prepend the Confluent V0 wire format prefix.
      * The schema ID is looked up from the pre-resolved cache, falling back to a
-     * network call only if the subject is not cached.
+     * network call only if the schema (and its version) is not cached.
      */
     private suspend fun buildSchemaRegistryData(
         fetcher: DataPlaneFetcher,
         field: ConsumerProducerFieldConfig,
         schemaCache: Map<String, SchemaVersionResponse> = emptyMap()
     ): ProduceRecordData {
-        val schemaInfo = schemaCache[field.schemaName]
-            ?: fetcher.getLatestVersionInfo(field.schemaName)
+        val schemaInfo = schemaCache[schemaCacheKey(field)]
+            ?: fetchSchemaVersion(fetcher, field)
         val schemaId = schemaInfo.id
 
         val payloadBytes = when (field.schemaFormat) {
             KafkaRegistryFormat.AVRO -> {
                 val avroSchema = field.parsedSchema as? AvroSchema
                     ?: error("Expected AvroSchema for format ${field.schemaFormat}, got ${field.parsedSchema?.javaClass?.simpleName}")
-                val record = AvroSchemaUtils.toObject(field.valueText, avroSchema)
+                val record = AvroJson.toObject(field.valueText, avroSchema)
                 serializeAvro(record, avroSchema)
             }
             KafkaRegistryFormat.PROTOBUF -> {
@@ -412,7 +425,7 @@ class CCloudProducerClient(
      */
     private fun buildAvroData(field: ConsumerProducerFieldConfig): ProduceRecordData {
         val avroSchema = field.parsedSchema as AvroSchema
-        val record = AvroSchemaUtils.toObject(field.valueText, avroSchema)
+        val record = AvroJson.toObject(field.valueText, avroSchema)
         val bytes = serializeAvro(record, avroSchema)
         return ProduceRecordData(
             type = "BINARY",
@@ -464,9 +477,9 @@ class CCloudProducerClient(
      * Mirror of [CCloudConsumerClient.deserializeAvro].
      */
     @VisibleForTesting
-    internal fun serializeAvro(value: Any, schema: AvroSchema): ByteArray {
+    internal fun serializeAvro(value: Any?, schema: AvroSchema): ByteArray {
         val avroSchema = schema.rawSchema()
-        val writer = GenericDatumWriter<Any>(avroSchema)
+        val writer = GenericDatumWriter<Any?>(avroSchema)
         val outputStream = java.io.ByteArrayOutputStream()
         val encoder = EncoderFactory.get().binaryEncoder(outputStream, null)
         writer.write(value, encoder)

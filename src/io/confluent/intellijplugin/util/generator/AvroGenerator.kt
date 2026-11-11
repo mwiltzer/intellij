@@ -707,12 +707,24 @@ class AvroGenerator private constructor(private val topLevelSchema: Schema) {
         val bytes: ByteArray
         if (decimalLogicalType != null) {
             // We don't support ranges for fixed decimal types at the moment
-            bytes = generateDecimal(decimalLogicalType, null)
+            bytes = fitToSize(generateDecimal(decimalLogicalType, null), schema.fixedSize)
         } else {
             bytes = ByteArray(schema.fixedSize)
             random.nextBytes(bytes)
         }
         return GenericData.Fixed(schema, bytes)
+    }
+
+    /**
+     * A decimal is the shortest two's-complement byte array of its unscaled value, but a fixed needs all of its bytes:
+     * the Avro encoder reads as many as the fixed says it has. Sign extension keeps the value.
+     */
+    private fun fitToSize(twosComplement: ByteArray, size: Int): ByteArray {
+        if (twosComplement.size >= size) return twosComplement.copyOfRange(twosComplement.size - size, twosComplement.size)
+        val extended = ByteArray(size)
+        if (twosComplement.isNotEmpty() && twosComplement[0] < 0) extended.fill(-1)
+        twosComplement.copyInto(extended, destinationOffset = size - twosComplement.size)
+        return extended
     }
 
     private fun generateDecimal(decimalLogicalType: LogicalTypes.Decimal, propertiesProp: Map<*, *>?): ByteArray {

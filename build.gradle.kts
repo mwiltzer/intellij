@@ -1,10 +1,15 @@
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.nio.file.FileSystems
+import java.nio.file.Files
 
 rootProject.extensions.add("gradle.version", "8.14.3")
 rootProject.extensions.add("kotlin.jvmTarget", "21")
-rootProject.extensions.add("kotlin.freeCompilerArgs", listOf("-Xjvm-default=all"))
+// first-only: annotations on constructor properties keep the targets they have always had. That is what Kotlin 2.2 does
+// by default as well, but it warns about every such annotation. The settings classes depend on where their annotations
+// land, so a change of that should be made on purpose, not by the default of a future Kotlin version.
+rootProject.extensions.add("kotlin.freeCompilerArgs", listOf("-Xjvm-default=all", "-Xannotation-default-target=first-only"))
 rootProject.extensions.add("java.sourceCompatibility", "21")
 rootProject.extensions.add("java.targetCompatibility", "21")
 
@@ -13,7 +18,7 @@ plugins {
     id("org.jetbrains.kotlin.jvm")
     kotlin("plugin.serialization") version "2.2.21"
     id("org.jetbrains.intellij.platform") version "2.9.0"
-    id("io.sentry.jvm.gradle") version "5.12.1"
+    id("io.sentry.jvm.gradle") version "5.12.2"
     id("org.openapi.generator") version "7.19.0"
     id("jacoco")
 }
@@ -249,6 +254,39 @@ tasks {
         // so the resulting plugin zip has the correct version number when installed
         if (!releaseName.isNullOrEmpty()) {
             version = releaseName.removePrefix("v")
+        }
+    }
+
+    // Fork only, never for upstream (see HANDOFF.md on the branch handoff/pr-split). IntelliJ IDEA 2026.3 moved the
+    // DataFrame classes of the module intellij.charts into intellij.charts.shared, a content module of the bundled
+    // Charts plugin, and does not load a plugin that requires the old module. The build targets 2026.1, which has only
+    // the old one, and targeting 2026.3 would need Gradle 9 and Java 25. So only the plugin in the sandbox, which
+    // buildPlugin packs and runIde starts, requires the new module; compiling and the tests keep using intellij.charts.
+    // The built plugin loads in 2026.3.
+    prepareSandbox {
+        doLast {
+            val oldModule = """<module name="intellij.charts" />"""
+            val newModule = """<module name="intellij.charts.shared" />"""
+            val descriptors = destinationDir.walkTopDown()
+                .filter { it.isFile && it.extension == "jar" }
+                .count { jar ->
+                    FileSystems.newFileSystem(jar.toPath()).use { zip ->
+                        val descriptor = zip.getPath("META-INF/plugin.xml")
+                        val text = if (Files.exists(descriptor)) Files.readString(descriptor) else ""
+                        val ours = "<id>com.intellij.bigdatatools.kafka</id>" in text
+                        if (ours) {
+                            // Fails once upstream changes that dependency, so that this block is revisited or dropped.
+                            check(oldModule in text || newModule in text) {
+                                "plugin.xml in $jar requires neither $oldModule nor $newModule"
+                            }
+                            if (oldModule in text) Files.writeString(descriptor, text.replace(oldModule, newModule))
+                        }
+                        ours
+                    }
+                }
+            check(descriptors == 1) {
+                "Expected the plugin.xml of this plugin in one JAR below $destinationDir, found $descriptors"
+            }
         }
     }
 

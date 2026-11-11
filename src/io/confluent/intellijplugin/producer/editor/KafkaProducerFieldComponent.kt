@@ -26,7 +26,6 @@ import com.intellij.ui.layout.selectedValueMatches
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import io.confluent.intellijplugin.common.editor.KafkaEditorUtils
 import io.confluent.intellijplugin.common.models.KafkaFieldType
-import io.confluent.intellijplugin.common.models.RegistrySchemaInEditor
 import io.confluent.intellijplugin.common.settings.StorageProducerConfig
 import io.confluent.intellijplugin.completion.KafkaProducerGeneratorCompletionProvider
 import io.confluent.intellijplugin.consumer.models.ConsumerProducerFieldConfig
@@ -42,6 +41,7 @@ import io.confluent.intellijplugin.core.util.toPresentableText
 import io.confluent.intellijplugin.core.rfs.driver.SafeExecutor
 import kotlinx.coroutines.launch
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
+import io.confluent.intellijplugin.registry.KafkaRegistryType
 import io.confluent.intellijplugin.registry.KafkaRegistryUtil
 import io.confluent.intellijplugin.registry.ui.KafkaSchemaInfoDialog
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
@@ -99,6 +99,16 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
         this, kafkaManager,
         producedEditor.topicComboBox, isKey
     )
+
+    // The version of the registry schema the records are written with, which only a Confluent registry has to choose from.
+    private val schemaVersionBox = SchemaVersionComboBox(
+        parent = this,
+        schemaComboBox = schemaComboBox,
+        loadVersions = { kafkaManager.getSchemaVersionsForEditor(it) },
+        onChosen = { schemaValidationError = null }
+    )
+    private val hasSchemaVersions = kafkaManager.registryType == KafkaRegistryType.CONFLUENT
+
     private val customSchemaPredicate = fieldTypeComboBox.selectedValueMatches {
         it in setOf(KafkaFieldType.AVRO_CUSTOM, KafkaFieldType.PROTOBUF_CUSTOM)
     }
@@ -173,14 +183,23 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
         val fieldType = fieldTypeComboBox.item
         val registryType = kafkaManager.registryType
         val schemaName = schemaComboBox.item?.schemaName ?: ""
-        val schemaFormat = schemaComboBox.item?.schemaFormat ?: KafkaRegistryFormat.UNKNOWN
+        // The serializer depends on the format, and the list may not have got to the selected schema yet.
+        val schemaFormat = when (fieldType) {
+            KafkaFieldType.SCHEMA_REGISTRY -> KafkaEditorUtils.resolveSelectedFormat(schemaComboBox, kafkaManager)
+            else -> schemaComboBox.item?.schemaFormat
+        } ?: KafkaRegistryFormat.UNKNOWN
+
+        // Only the schema of the registry has versions to choose from.
+        val schemaVersion = if (fieldType == KafkaFieldType.SCHEMA_REGISTRY) selectedSchemaVersion() else null
 
         val schema = when (fieldType) {
             null, KafkaFieldType.STRING, KafkaFieldType.JSON, KafkaFieldType.LONG, KafkaFieldType.INTEGER,
             KafkaFieldType.DOUBLE, KafkaFieldType.FLOAT, KafkaFieldType.BASE64, KafkaFieldType.MESSAGEPACK,
             KafkaFieldType.NULL -> null
 
-            KafkaFieldType.SCHEMA_REGISTRY -> KafkaRegistryUtil.loadSchema(schemaName, fieldType, kafkaManager)
+            KafkaFieldType.SCHEMA_REGISTRY ->
+                KafkaRegistryUtil.loadSchema(schemaName, fieldType, kafkaManager, schemaVersion)
+
             KafkaFieldType.AVRO_CUSTOM, KafkaFieldType.PROTOBUF_CUSTOM -> customSchemaController.getSchema()
         }
 
@@ -193,9 +212,14 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
             registryType = registryType,
             schemaName = schemaName,
             schemaFormat = schemaFormat,
-            parsedSchema = schema
+            parsedSchema = schema,
+            schemaVersion = schemaVersion
         )
     }
+
+    /** The version of the schema that was chosen for the records, `null` for the latest one. */
+    fun selectedSchemaVersion(): Long? =
+        if (hasSchemaVersions) schemaVersionBox.selectedFor(schemaComboBox.item?.schemaName) else null
 
     private lateinit var textRow: Row
     private lateinit var jsonRow: Row
@@ -224,8 +248,9 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
                 }
                 rowsRange {
                     row(KafkaMessagesBundle.message("settings.format.registry.schema")) {
-                        cell(schemaComboBox).onChanged { schemaValidationError = null }.resizableColumn()
-                            .gap(RightGap.SMALL)
+                        cell(schemaComboBox).onChanged { schemaValidationError = null }.align(AlignX.FILL)
+                            .resizableColumn().gap(RightGap.SMALL)
+                        cell(schemaVersionBox.comboBox).visible(hasSchemaVersions).gap(RightGap.SMALL)
                         actionButton(
                             DumbAwareAction.create(
                                 KafkaMessagesBundle.message("show.schema.info"),
@@ -395,10 +420,11 @@ class KafkaProducerFieldComponent(private val producedEditor: KafkaProducerEdito
             KafkaFieldType.NULL -> Unit
             KafkaFieldType.SCHEMA_REGISTRY -> {
                 jsonField.text = text
-                schemaComboBox.item = if (isKey)
-                    RegistrySchemaInEditor(config.keySubject, config.takeKeyFormat())
-                else
-                    RegistrySchemaInEditor(config.valueSubject, config.takeValueFormat())
+                val subject = if (isKey) config.keySubject else config.valueSubject
+                KafkaEditorUtils.selectSchemaByName(
+                    schemaComboBox, subject, if (isKey) config.takeKeyFormat() else config.takeValueFormat()
+                )
+                schemaVersionBox.restore(subject, if (isKey) config.keyVersion else config.valueVersion)
             }
 
             KafkaFieldType.AVRO_CUSTOM, KafkaFieldType.PROTOBUF_CUSTOM -> {

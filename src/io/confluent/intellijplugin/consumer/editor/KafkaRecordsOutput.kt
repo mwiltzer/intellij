@@ -31,6 +31,7 @@ import io.confluent.intellijplugin.core.table.renderers.DurationRenderer
 import io.confluent.intellijplugin.core.ui.ExpansionPanel
 import io.confluent.intellijplugin.core.ui.onDoubleClick
 import io.confluent.intellijplugin.core.ui.setSouthComponent
+import io.confluent.intellijplugin.data.SchemaUsageSource
 import io.confluent.intellijplugin.telemetry.MessageViewerEvent
 import io.confluent.intellijplugin.telemetry.logUsage
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
@@ -43,7 +44,11 @@ import javax.swing.JPanel
 import javax.swing.JTable
 import kotlin.math.max
 
-class KafkaRecordsOutput(val project: Project, val isProducer: Boolean) : Disposable {
+class KafkaRecordsOutput(
+    val project: Project,
+    val isProducer: Boolean,
+    private val schemaUsages: SchemaUsageSource? = null
+) : Disposable {
     private var tableLoadingDecorator: TableLoadingDecorator? = null
     private var filterTelemetryUnsubscribe: (() -> Unit)? = null
 
@@ -186,7 +191,7 @@ class KafkaRecordsOutput(val project: Project, val isProducer: Boolean) : Dispos
     private val statisticPanel = ConsumerTableStats()
 
     private val detailsDelegate: Lazy<KafkaRecordDetails> = lazy {
-        KafkaRecordDetails(project, this)
+        KafkaRecordDetails(project, this, schemaUsages)
     }
 
     private val details: KafkaRecordDetails by detailsDelegate

@@ -1,0 +1,10 @@
+[
+  {
+    "subject": "user-schema-value",
+    "version": 3
+  },
+  {
+    "subject": "audit-log-value",
+    "version": 1
+  }
+]

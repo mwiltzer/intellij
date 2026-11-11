@@ -193,6 +193,36 @@ favorite: right-click a topic and select **Add to Favorites**.
       Protobuf file, start typing random in the value field to see autocompletion options for possible random values.
       For example, you can use `"${random.integer(1,10)}"` to generate a random integer between 1 and 10.
       <img src="images/kafka_random_value.png" alt="Kafka random keyword" width="500"/>
+    * To replay a record, paste its JSON into the value field. Avro values can be written the way Avro writes them in
+      JSON, like the consumer shows them, or the way tools like AKHQ show them: the plain value of a union instead of
+      `{"string": "Ada"}`, ISO text for dates and timestamps (`"2024-05-01"`, `"2024-05-01T10:15:30.123Z"`), a number
+      for a decimal, Base64 text for bytes, and fields that are left out, which get the default of the schema or null
+      when the schema allows it. If the JSON does not fit the schema, the message names the field that does not. A
+      value of a `bytes` or `fixed` field is read as Base64 only when the JSON is not valid in the way Avro writes it,
+      because the same text means something else there: the characters of the bytes.
+
+   The schema list shows the schema names as soon as the Schema Registry has listed them, and the names of the last
+   listing right away while it is asked again. The format of a schema (Avro, Protobuf, or JSON) is looked up for the
+   selected schema, the schema of the topic, and the schemas that the list shows on screen, so on a Schema Registry
+   with thousands of schemas it can take a moment to appear. If a schema that you chose or saved in an editor no
+   longer exists in the Schema Registry, the schema field stays empty instead of showing another schema.
+
+   The schemas that matter come first in the list: the schema of the topic (`<topic>-value`, or `<topic>-key` for a
+   key), the other schema of the topic, other schemas whose names start with the name of the topic, your favorites, all
+   the others in alphabetical order, and the internal schemas (names that start with an underscore) last. A Confluent
+   Schema Registry that you reach through a Kafka connection is asked for the schemas that start with the name of the
+   topic every time an editor is opened. That takes a fraction of a second, so when nothing was listed yet, for example in
+   the first editor that you open, the schema of the topic is selected and its format looked up while the list of all
+   schemas is still loading. When the names of an earlier listing are shown, a schema that was registered since is added
+   to them and selected. The names of all schemas are kept for five minutes with such a Schema Registry, and for a
+   minute otherwise; refreshing the **Schema Registry** section lists them again.
+
+   With a Confluent Schema Registry, the list next to the schema list sets the version of the schema that the records
+   are written with. It offers **Latest**, which is the default, and the versions of the schema, the newest first.
+   The versions are looked up when you open the list. The choice belongs to the selected schema: another schema starts
+   with its latest version again. It is saved with the producer. If the chosen version no longer exists in the Schema
+   Registry, the producer reports an error and does not write the latest version instead. A consumer needs no such
+   choice, because it reads each record with the schema that the record names.
 
 7. Under **Headers**, provide any custom headers. If you have them in JSON or CSV format, you can paste them into this
    section.
@@ -233,7 +263,10 @@ click ![Show Statistics](icons/app.expui.status.infoOutline.svg) to enable stati
       beginning** to get all records from the topic.
     * In the **Limit** list, select when to stop receiving data, for example, when a certain number of records is
       reached in the topic.
-    * Use **Filter** to filter records by substring in their keys, values, or headers.
+    * Use **Filter** to filter records by substring in their keys, values, or headers. Keys and values are searched in
+      the text that the table shows for them, so what you see is what you find. Select **Does not contain** to keep
+      the records that do not have the text, or **RegExp** to match with a regular expression, which must match the
+      whole key, value, or header. A regular expression that is not valid is marked as you type.
 7. Under Other, configure additional parameters:
     * In the **Partitions** box, enter a partition ID or a comma-separated list of IDs to get records from specific
       partitions only.
@@ -244,6 +277,13 @@ click ![Show Statistics](icons/app.expui.status.infoOutline.svg) to enable stati
 
 You can then click any record in the **Data** tab to show its details. You can also click Show Statistics to enable
 statistics.
+
+If the record was written with a Schema Registry schema, its details show the **Key schema** and the **Value schema**:
+the ID of the schema that the record names, and the subjects and versions it is registered as, like
+`100016 (orders-value, version 3)`. A schema that is registered under many subjects shows the subjects of the topic
+first and counts the others (`+4 more`). A record that names its schema by a GUID shows the GUID. The Schema Registry is
+asked once for each ID, and the answer is remembered for a few minutes. This works with Confluent Schema Registries,
+including Confluent Cloud. The details of the record do not wait for the answer.
 
 ---
 **NOTE:** To quickly create producers and consumers, assign shortcuts to these actions. Press **⌘Cmd ⇧Shift A** on macOS
@@ -297,8 +337,10 @@ plugin integrates with Schema Registry and supports Avro, Protobuf, and JSON sch
         * **Configuration source**: select the way to provide connection parameters:
             * **Custom**: select the authentication method and provide credentials. Credentials are saved in the IDE
               password storage. If you want to use SSL settings different from those of the Kafka Broker, clear the
-              **Use broker SSL settings** checkbox and provide the path for the truststore. The same SSL settings are
-              used to connect to the OAuth token endpoint. The following authentication methods are available:
+              **Use broker SSL settings** checkbox and provide the path for the truststore. A truststore replaces the
+              default trust store, so it must contain the CA certificate of the Schema Registry and, if you use OAuth
+              2.0, of the token endpoint: the same SSL settings are used to connect to both. The following
+              authentication methods are available:
                 * **None**: connect without authentication.
                 * **Basic Auth**: enter a username and a password.
                 * **Bearer**: enter a static bearer token.
@@ -368,6 +410,35 @@ Raw View:
 favorite: right-click a schema and select **Add to Favorites**.
 
 ---
+
+### Filter and hide schemas
+
+A Schema Registry can have thousands of schemas. The **Schema Registry** section helps you to find the ones you work
+with:
+
+* Type in the filter field to show only the schemas whose names contain the text, ignoring case.
+* Start the text with `^` to show the schemas whose names begin with it instead, for example `^orders-`. This is
+  case-sensitive. With a Confluent Schema Registry that you reach through a Kafka connection, the registry then lists
+  only those schemas, which takes a fraction of the time that listing thousands of schemas does. A longer prefix is
+  served from what a shorter one listed, and the registry is asked once you stop typing. Confluent Cloud and AWS Glue
+  list all schemas and pick the matching ones, so the filter shows the same schemas there, and so does a registry that
+  does not know the prefix and answers with all of its schemas. A `^` alone changes nothing until you type the prefix.
+* With a Confluent Schema Registry, two switches in the toolbar decide which schemas are hidden. Both are off by
+  default:
+    * Click ![Show Internal Schemas](icons/app.actions.toggleVisibility.svg) (**Show Internal Schemas**) to also show
+      the schemas whose names start with an underscore, such as those of internal topics.
+    * Click **Show Schemas of Other Topics** to also show the schemas of topics that are not in your topic list, for
+      example because you are not allowed to see them. This needs the schema names to follow the `<topic>-key` and
+      `<topic>-value` pattern. Schemas that do not belong to a single topic, for example those named after a record,
+      are always shown.
+
+A line below the table tells how many schemas are hidden, and when all of them are, the empty state has links to show
+them. Favorite schemas are never hidden. A schema that is registered before its topic exists stays hidden until the
+topic exists or you click **Show Schemas of Other Topics**.
+
+The section keeps the list of schemas it got from the Schema Registry, for up to five minutes if the registry can list by
+prefix, else for one. Filtering, changing the limit, marking favorites, and the switches use that list, so they respond
+right away. To ask the Schema Registry again, refresh the section.
 
 ### Compare schema versions
 

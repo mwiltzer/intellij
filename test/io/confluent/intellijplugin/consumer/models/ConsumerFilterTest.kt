@@ -1,6 +1,8 @@
 package io.confluent.intellijplugin.consumer.models
 
 import com.intellij.testFramework.junit5.TestApplication
+import io.confluent.intellijplugin.registry.SchemaIdHeaders
+import io.confluent.kafka.serializers.schema.id.SchemaId
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.internals.RecordHeaders
 import org.apache.kafka.common.record.TimestampType
@@ -8,6 +10,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.regex.PatternSyntaxException
 
 @TestApplication
 class ConsumerFilterTest {
@@ -633,6 +636,142 @@ class ConsumerFilterTest {
             )
             // empty headers list => any { it.contains("something") } => false
             assertFalse(filter.isRecordPassFilter(recordWithEmptyHeaders()))
+        }
+    }
+
+    @Nested
+    @DisplayName("Regex compilation")
+    inner class RegexCompilation {
+
+        private fun regexFilter(
+            key: String? = null,
+            value: String? = null,
+            headKey: String? = null,
+            headValue: String? = null
+        ) = ConsumerFilter(
+            filterKey = key,
+            filterValue = value,
+            filterHeadKey = headKey,
+            filterHeadValue = headValue,
+            type = ConsumerFilterType.REGEX
+        )
+
+        @Test
+        fun `should compile a pattern once and reuse it for every record`() {
+            val filter = regexFilter(value = "v.*")
+            val compiled = filter.pattern("v.*")
+
+            repeat(3) { assertTrue(filter.isRecordPassFilter(record(value = "value-$it"))) }
+
+            assertSame(compiled, filter.pattern("v.*"))
+        }
+
+        @Test
+        fun `should keep different patterns apart`() {
+            val filter = regexFilter()
+
+            assertNotSame(filter.pattern("a"), filter.pattern("b"))
+            assertTrue(filter.pattern("a").matches("a"))
+            assertFalse(filter.pattern("a").matches("b"))
+        }
+
+        @Test
+        fun `should keep rejecting an invalid pattern instead of caching a failure`() {
+            val filter = regexFilter(value = "foo(")
+
+            repeat(2) {
+                assertThrows(PatternSyntaxException::class.java) { filter.isRecordPassFilter(record(value = "foo")) }
+            }
+        }
+
+        @Test
+        fun `should not look at a header pattern when the record has no headers`() {
+            val filter = regexFilter(headKey = "foo(")
+
+            assertFalse(filter.isRecordPassFilter(record()))
+        }
+
+        @Test
+        fun `should match key value and headers with their own patterns`() {
+            val filter = regexFilter(key = "k-\\d+", value = "v-\\d+", headKey = "h-.*", headValue = "x-\\d+")
+            val headers = RecordHeaders().apply { add("h-1", "x-1".toByteArray()) }
+
+            assertTrue(filter.isRecordPassFilter(record(key = "k-7", value = "v-8", headers = headers)))
+            assertFalse(filter.isRecordPassFilter(record(key = "k-7", value = "other", headers = headers)))
+            assertFalse(filter.isRecordPassFilter(record(key = "k-7", value = "v-8")))
+        }
+    }
+
+    @Nested
+    @DisplayName("Headers the plugin noted")
+    inner class NotedHeaders {
+
+        private fun filter(type: ConsumerFilterType, headKey: String? = null, headValue: String? = null) =
+            ConsumerFilter(
+                filterKey = null,
+                filterValue = null,
+                filterHeadKey = headKey,
+                filterHeadValue = headValue,
+                type = type
+            )
+
+        private fun noted(vararg sent: Pair<String, String>): RecordHeaders {
+            val headers = RecordHeaders()
+            sent.forEach { (name, value) -> headers.add(name, value.toByteArray()) }
+            SchemaIdHeaders.record(headers, isKey = false, payload = byteArrayOf(0, 0, 0, 0, 7, 1))
+            return headers
+        }
+
+        @Test
+        fun `should not find the header that was noted by its name`() {
+            val filter = filter(ConsumerFilterType.CONTAINS, headKey = "schemaId")
+
+            assertFalse(filter.isRecordPassFilter(record(headers = noted("trace" to "t1"))))
+        }
+
+        @Test
+        fun `should pass a record whose only header with that name was noted, when headers must not contain it`() {
+            val filter = filter(ConsumerFilterType.DOES_NOT_CONTAINS, headKey = "schemaId")
+
+            assertTrue(filter.isRecordPassFilter(record(headers = noted("trace" to "t1"))))
+        }
+
+        @Test
+        fun `should not match a pattern against the header that was noted`() {
+            val filter = filter(ConsumerFilterType.REGEX, headKey = "confluent\\.intellij\\..*")
+
+            assertFalse(filter.isRecordPassFilter(record(headers = noted("trace" to "t1"))))
+        }
+
+        @Test
+        fun `should still find a header the producer sent`() {
+            val filter = filter(ConsumerFilterType.CONTAINS, headKey = "trace")
+
+            assertTrue(filter.isRecordPassFilter(record(headers = noted("trace" to "t1"))))
+        }
+
+        @Test
+        fun `should still find the header of the wire format V1, which the producer sent`() {
+            val filter = filter(ConsumerFilterType.CONTAINS, headKey = "schema_id")
+            val headers = noted(SchemaId.VALUE_SCHEMA_ID_HEADER to "x")
+
+            assertTrue(filter.isRecordPassFilter(record(headers = headers)))
+        }
+
+        @Test
+        fun `should not match the value of the header that was noted`() {
+            // The four bytes of the ID, seen as text, are no value of a header the producer sent.
+            val filter = filter(ConsumerFilterType.CONTAINS, headValue = "\u0007")
+
+            assertFalse(filter.isRecordPassFilter(record(headers = noted("trace" to "t1"))))
+        }
+
+        @Test
+        fun `should pass records without a header filter whatever the headers`() {
+            val filter = filter(ConsumerFilterType.CONTAINS)
+
+            assertTrue(filter.isRecordPassFilter(record(headers = noted("trace" to "t1"))))
+            assertTrue(filter.isRecordPassFilter(record()))
         }
     }
 }

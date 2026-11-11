@@ -305,6 +305,110 @@ class ClusterDataFiltersTest {
     }
 
     @Nested
+    @DisplayName("matchesName")
+    inner class MatchesName {
+
+        @Test
+        fun `should match a part of the name regardless of the case`() {
+            assertTrue(ClusterDataFilters.matchesName("Orders-Value", "orders"))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "-VALUE"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "payments"))
+        }
+
+        @Test
+        fun `should let every name pass without a filter`() {
+            assertTrue(ClusterDataFilters.matchesName("orders-value", null))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", ""))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "   "))
+        }
+
+        @Test
+        fun `should take the filter literally instead of as a pattern`() {
+            // `(` is an invalid pattern, `.` and `*` would match anything as one.
+            assertTrue(ClusterDataFilters.matchesName("orders(v1)-value", "orders(v1"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "(v1"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "o.ders"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "ord*"))
+            assertTrue(ClusterDataFilters.matchesName("orders.v1-value", "orders.v1"))
+        }
+
+        @Test
+        fun `should match the beginning of the name for a filter that starts with a caret`() {
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "^orders"))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "^orders-value"))
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "^o"))
+            assertFalse(ClusterDataFilters.matchesName("my-orders-value", "^orders"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "^rders"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "^orders-value-v2"))
+        }
+
+        @Test
+        fun `should take the case as it is for a filter that starts with a caret`() {
+            // The registry takes the case as it is, and the result must not depend on who did the filtering.
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "^Orders"))
+            assertFalse(ClusterDataFilters.matchesName("Orders-value", "^orders"))
+            assertTrue(ClusterDataFilters.matchesName("Orders-value", "^Orders"))
+        }
+
+        @Test
+        fun `should let every name pass for a caret alone`() {
+            assertTrue(ClusterDataFilters.matchesName("orders-value", "^"))
+            assertTrue(ClusterDataFilters.matchesName("", "^"))
+        }
+
+        @Test
+        fun `should take the rest of a filter with a caret literally`() {
+            assertTrue(ClusterDataFilters.matchesName("orders(v1)-value", "^orders(v1"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "^o.ders"))
+            assertFalse(ClusterDataFilters.matchesName("orders-value", "^ord*"))
+            assertTrue(ClusterDataFilters.matchesName("^orders-value", "^^orders"))
+        }
+
+        @Test
+        fun `should take a caret that is not the first character for part of the text`() {
+            assertTrue(ClusterDataFilters.matchesName("a^b-value", "a^b"))
+            assertFalse(ClusterDataFilters.matchesName("ab-value", "a^b"))
+            // A space before it is part of the text, which no name contains.
+            assertFalse(ClusterDataFilters.matchesName("orders-value", " ^orders"))
+        }
+
+        @Test
+        fun `should take the names of a context as they are written`() {
+            assertTrue(ClusterDataFilters.matchesName(":.ctx:orders-value", "^:.ctx:"))
+            assertFalse(ClusterDataFilters.matchesName(":.ctx:orders-value", "^orders"))
+        }
+    }
+
+    @Nested
+    @DisplayName("prefixOf")
+    inner class PrefixOf {
+
+        @Test
+        fun `should give what follows the caret`() {
+            assertEquals("orders", ClusterDataFilters.prefixOf("^orders"))
+            assertEquals("orders-value", ClusterDataFilters.prefixOf("^orders-value"))
+            assertEquals("^orders", ClusterDataFilters.prefixOf("^^orders"))
+            assertEquals("a b", ClusterDataFilters.prefixOf("^a b"))
+            assertEquals(" ", ClusterDataFilters.prefixOf("^ "))
+        }
+
+        @Test
+        fun `should give nothing for a caret alone`() {
+            assertEquals("", ClusterDataFilters.prefixOf("^"))
+        }
+
+        @Test
+        fun `should give null for a filter that is no prefix`() {
+            assertNull(ClusterDataFilters.prefixOf(null))
+            assertNull(ClusterDataFilters.prefixOf(""))
+            assertNull(ClusterDataFilters.prefixOf("  "))
+            assertNull(ClusterDataFilters.prefixOf("orders"))
+            assertNull(ClusterDataFilters.prefixOf("a^b"))
+            assertNull(ClusterDataFilters.prefixOf(" ^orders"))
+        }
+    }
+
+    @Nested
     @DisplayName("sortSchemasWithFavorites")
     inner class SortSchemasWithFavorites {
 

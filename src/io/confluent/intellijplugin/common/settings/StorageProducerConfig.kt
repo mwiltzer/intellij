@@ -26,6 +26,9 @@ data class StorageProducerConfig(
     var valueStrategy: ConfluentRegistryStrategy = ConfluentRegistryStrategy.TOPIC_NAME,
     var keySubject: String = "",
     var valueSubject: String = "",
+    // The version of the registry schema, `null` for the latest one.
+    var keyVersion: Long? = null,
+    var valueVersion: Long? = null,
     var flowParams: ProducerFlowParams? = null,
 
     var customKeySchema: CustomSchemaData? = null,

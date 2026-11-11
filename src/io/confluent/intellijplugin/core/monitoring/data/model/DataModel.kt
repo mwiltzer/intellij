@@ -69,6 +69,13 @@ abstract class DataModel<T>(val allowAutoUpdate: Boolean = true) : Disposable {
         notifyOnChanged()
     }
 
+    /** Sets the data like [update] does it, for data that was not made by the [updater]. */
+    fun setData(newValue: T, loadMore: Boolean) {
+        this.loadMore = loadMore
+        setData(newValue)
+        notifyLoadMore()
+    }
+
     fun setError(e: Throwable? = null, msg: String = KafkaMessagesBundle.message("monitoring.updater.error")) {
         thisLogger().debug(msg, e)
 

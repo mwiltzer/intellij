@@ -52,3 +52,11 @@ data class KafkaSchemaInfo(
         )
     }
 }
+
+/**
+ * Whether the details of this schema (format and version) were actually loaded from the registry.
+ *
+ * Entries built from the plain subject list only carry a name, and failed loads are soft deleted,
+ * so neither of them can be used to tell the format of the schema.
+ */
+internal fun KafkaSchemaInfo.hasLoadedDetails(): Boolean = !isSoftDeleted && type != null && version != null
