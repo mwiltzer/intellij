@@ -141,7 +141,7 @@ class ConfluentRegistryClient(restService: RestService, props: Map<String, Strin
          */
         fun create(url: String, props: Map<String, String>): ConfluentRegistryClient {
             SchemaRegistryOAuthUrls.allowTokenEndpoint(props)
-            val restService = RestService(url)
+            val restService = SingleFlightTokenRestService(url)
             restService.configure(props)
             return ConfluentRegistryClient(restService, props)
         }

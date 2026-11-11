@@ -25,6 +25,9 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.io.IOException
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Exercises the Schema Registry client's built-in `OAUTHBEARER` credential provider end-to-end through
@@ -42,6 +45,7 @@ class ConfluentRegistryClientOAuthTest {
         private const val IDENTITY_POOL_ID = "pool-test"
         private const val TOKEN_PATH = "/oauth/token"
         private const val SUBJECTS_PATH = "/subjects"
+        private const val CONCURRENT_CALLS = 10
 
         private lateinit var wireMockServer: WireMockServer
 
@@ -115,6 +119,35 @@ class ConfluentRegistryClientOAuthTest {
             assertEquals(listOf("orders-value", "users-value"), subjects.toList())
             wireMockServer.verify(exactly(1), postRequestedFor(urlPathEqualTo(TOKEN_PATH)))
             wireMockServer.verify(exactly(2), getRequestedFor(urlPathEqualTo(SUBJECTS_PATH)))
+        }
+
+        @Test
+        fun `should request the token only once for registry calls that run at the same time`() {
+            stubTokenEndpoint(delayMs = 300)
+            stubSubjectsEndpoint()
+            val registryClient = createRegistryClient(oauthProperties())
+
+            val results = callConcurrently(CONCURRENT_CALLS) { registryClient.internalClient.getAllSubjects() }
+
+            assertEquals(CONCURRENT_CALLS, results.count { it.isSuccess }, "Failures: ${results.mapNotNull { it.exceptionOrNull() }}")
+            wireMockServer.verify(exactly(1), postRequestedFor(urlPathEqualTo(TOKEN_PATH)))
+            wireMockServer.verify(exactly(CONCURRENT_CALLS), getRequestedFor(urlPathEqualTo(SUBJECTS_PATH)))
+        }
+
+        @Test
+        fun `should fail registry calls that run at the same time on one rejected token request`() {
+            wireMockServer.stubFor(
+                post(urlPathEqualTo(TOKEN_PATH))
+                    .willReturn(aResponse().withStatus(401).withFixedDelay(300).withBody("""{"error":"invalid_client"}"""))
+            )
+            stubSubjectsEndpoint()
+            val registryClient = createRegistryClient(oauthProperties())
+
+            val results = callConcurrently(CONCURRENT_CALLS) { registryClient.internalClient.getAllSubjects() }
+
+            assertEquals(CONCURRENT_CALLS, results.count { it.isFailure })
+            wireMockServer.verify(exactly(1), postRequestedFor(urlPathEqualTo(TOKEN_PATH)))
+            wireMockServer.verify(exactly(0), getRequestedFor(urlPathEqualTo(SUBJECTS_PATH)))
         }
 
         @Test
@@ -214,11 +247,29 @@ class ConfluentRegistryClientOAuthTest {
     private fun createRegistryClient(properties: Map<String, String>): ConfluentRegistryClient =
         ConfluentRegistryClient.create(baseUrl, properties)
 
-    private fun stubTokenEndpoint() {
+    /** Runs [call] on [callers] threads that are released at the same moment. */
+    private fun <T> callConcurrently(callers: Int, call: () -> T): List<Result<T>> {
+        val executor = Executors.newFixedThreadPool(callers)
+        try {
+            val start = CountDownLatch(1)
+            val pending = List(callers) {
+                executor.submit<Result<T>> {
+                    start.await()
+                    runCatching(call)
+                }
+            }
+            start.countDown()
+            return pending.map { it.get(30, TimeUnit.SECONDS) }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    private fun stubTokenEndpoint(delayMs: Int = 0) {
         wireMockServer.stubFor(
             post(urlPathEqualTo(TOKEN_PATH))
                 .withHeader("Authorization", equalTo(basicAuthHeader()))
-                .willReturn(jsonResponse(tokenResponseJson))
+                .willReturn(jsonResponse(tokenResponseJson).withFixedDelay(delayMs))
         )
     }
 
