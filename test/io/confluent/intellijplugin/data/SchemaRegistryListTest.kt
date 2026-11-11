@@ -4,6 +4,7 @@ import com.intellij.testFramework.junit5.TestApplication
 import io.confluent.intellijplugin.core.monitoring.data.model.ObjectDataModel
 import io.confluent.intellijplugin.registry.KafkaRegistryFormat
 import io.confluent.intellijplugin.registry.common.KafkaSchemaInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +53,8 @@ class SchemaRegistryListTest {
     private inner class Fixture(
         names: List<String> = (1..10).map { "subject-%02d".format(it) },
         registry: Registry = Registry(),
-        detailsDelayMillis: Long = 0
+        detailsDelayMillis: Long = 0,
+        prepare: suspend () -> Unit = {}
     ) {
         val registry = registry
         val resolver = SchemaFormatResolver(4, scope) { registry.load(it) }
@@ -73,7 +75,8 @@ class SchemaRegistryListTest {
             settings = { settings },
             model = { model },
             refreshFromRegistry = { refreshes.incrementAndGet() },
-            detailsDelayMillis = detailsDelayMillis
+            detailsDelayMillis = detailsDelayMillis,
+            prepare = prepare
         )
 
         val shownNames get() = model.data?.map { it.name }
@@ -131,6 +134,25 @@ class SchemaRegistryListTest {
             val (shown, _) = fixture.list.view(fixture.listing!!)
 
             assertEquals(KafkaSchemaInfo("subject-05", KafkaRegistryFormat.AVRO, 1, isFavorite = true), shown.first())
+        }
+
+        @Test
+        fun `should leave out the schemas the settings hide and tell how many`() {
+            val fixture = Fixture(names = listOf("_internal-value", "orders-value", "stranger-value"))
+            fixture.settings = fixture.settings.copy(showInternal = false, visibleTopics = setOf("orders"))
+
+            val (shown, hasMore) = fixture.list.view(fixture.listing!!)
+
+            assertEquals(listOf("orders-value"), shown.map { it.name })
+            assertFalse(hasMore)
+            assertEquals(HiddenSchemas(internal = 1, otherTopics = 1), fixture.list.hidden)
+        }
+
+        @Test
+        fun `should hide nothing until it has been told`() {
+            val fixture = Fixture()
+
+            assertEquals(HiddenSchemas.NONE, fixture.list.hidden)
         }
     }
 
@@ -315,6 +337,70 @@ class SchemaRegistryListTest {
 
             eventually { fixture.model.data == emptyList<KafkaSchemaInfo>() }
             assertTrue(fixture.registry.requested.isEmpty())
+        }
+
+        @Test
+        fun `should tell what the settings hide when it shows the list`() {
+            val fixture = Fixture(names = listOf("_a-value", "_b-value", "orders-value"))
+            fixture.settings = fixture.settings.copy(showInternal = false)
+
+            fixture.list.refilter()
+
+            eventually { fixture.shownNames == listOf("orders-value") }
+            assertEquals(HiddenSchemas(internal = 2, otherTopics = 0), fixture.list.hidden)
+
+            fixture.settings = fixture.settings.copy(showInternal = true)
+            fixture.list.refilter()
+
+            eventually { fixture.shownNames?.size == 3 }
+            assertEquals(HiddenSchemas.NONE, fixture.list.hidden)
+        }
+
+        @Test
+        fun `should prepare before it shows the list`() = runBlocking<Unit> {
+            val gate = CompletableDeferred<Unit>()
+            val fixture = Fixture(prepare = { gate.await() })
+
+            fixture.list.refilter()
+            delay(100)
+
+            assertNull(fixture.model.data)
+
+            gate.complete(Unit)
+            eventually { fixture.shownNames?.size == 10 }
+        }
+
+        @Test
+        fun `should show the list with the settings as they are after it prepared`() {
+            lateinit var fixture: Fixture
+            fixture = Fixture(
+                names = listOf("orders-value", "stranger-value"),
+                prepare = { fixture.settings = fixture.settings.copy(visibleTopics = setOf("orders")) }
+            )
+
+            fixture.list.refilter()
+
+            eventually { fixture.shownNames == listOf("orders-value") }
+            assertEquals(1, fixture.list.hidden.otherTopics)
+        }
+
+        @Test
+        fun `should show the list also when it can not prepare`() {
+            val fixture = Fixture(prepare = { error("topics unavailable") })
+
+            fixture.list.refilter()
+
+            eventually { fixture.shownNames?.size == 10 }
+        }
+
+        @Test
+        fun `should not show the list when it is cancelled while it prepares`() = runBlocking<Unit> {
+            val fixture = Fixture(prepare = { throw CancellationException("gone") })
+
+            fixture.list.refilter()
+            delay(150)
+
+            assertNull(fixture.model.data)
         }
     }
 

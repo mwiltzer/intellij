@@ -333,6 +333,11 @@ class CCloudClusterDataManager(
             }
         }
 
+    override suspend fun listVisibleTopicNames(): Set<String>? = withContext(Dispatchers.IO) {
+        val topics = dataPlaneCache.getTopics().ifEmpty { dataPlaneCache.refreshTopics() }
+        topics.mapTo(HashSet()) { it.topicName }
+    }
+
     /** Launch non-blocking schema enrichment job with progressive UI updates. */
     private fun launchSchemaEnrichment(schemas: List<KafkaSchemaInfo>): Job {
         val schemaDataList = schemas.map { schema ->

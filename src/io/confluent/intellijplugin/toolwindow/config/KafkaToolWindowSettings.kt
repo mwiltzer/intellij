@@ -56,6 +56,10 @@ class KafkaToolWindowSettings : PersistentStateComponent<KafkaToolWindowSettings
     var showFavoriteTopics: Boolean = false
     var showFavoriteSchema: Boolean = false
 
+    // Schemas of internal subjects (names with a leading underscore), and of topics the user cannot see, are hidden.
+    var showInternalSchemas: Boolean = false
+    var showOtherTopicsSchemas: Boolean = false
+
     private val consumerGroupsTableColumns = mutableListOf(
         ConsumerGroupPresentable::isFavorite.name,
         ConsumerGroupPresentable::consumerGroup.name,

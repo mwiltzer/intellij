@@ -29,8 +29,13 @@ import io.confluent.intellijplugin.toolwindow.config.KafkaToolWindowSettings
 import io.confluent.intellijplugin.toolwindow.NavigableController
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import com.intellij.ui.components.JBPanelWithEmptyText
+import com.intellij.util.ui.JBUI
+import io.confluent.intellijplugin.data.ClusterDataFilters
+import io.confluent.intellijplugin.data.HiddenSchemas
 import java.awt.BorderLayout
 import java.awt.CardLayout
+import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
@@ -81,6 +86,39 @@ internal class KafkaRegistryController(
         }
     }
 
+    private val showInternalSchemasAction = object : DumbAwareToggleAction(
+        KafkaMessagesBundle.message("action.show.internal.schemas"),
+        KafkaMessagesBundle.message("action.show.internal.schemas.description"),
+        AllIcons.Actions.ToggleVisibility
+    ) {
+        override fun isSelected(e: AnActionEvent) = KafkaToolWindowSettings.getInstance().showInternalSchemas
+        override fun getActionUpdateThread() = ActionUpdateThread.BGT
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            KafkaToolWindowSettings.getInstance().showInternalSchemas = state
+            dataManager.refilterSchemas()
+        }
+    }
+
+    private val showOtherTopicsSchemasAction = object : DumbAwareToggleAction(
+        KafkaMessagesBundle.message("action.show.other.topics.schemas"),
+        KafkaMessagesBundle.message("action.show.other.topics.schemas.description"),
+        AllIcons.General.Filter
+    ) {
+        override fun isSelected(e: AnActionEvent) = KafkaToolWindowSettings.getInstance().showOtherTopicsSchemas
+        override fun getActionUpdateThread() = ActionUpdateThread.BGT
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            KafkaToolWindowSettings.getInstance().showOtherTopicsSchemas = state
+            dataManager.refilterSchemas()
+        }
+    }
+
+    // Tells that schemas are hidden, so that nobody looks for one that is not there.
+    private val hiddenNote = JLabel().apply {
+        foreground = JBUI.CurrentTheme.Label.disabledForeground(false)
+        icon = AllIcons.General.Note
+        isVisible = false
+    }
+
     init {
         init()
 
@@ -110,10 +148,13 @@ internal class KafkaRegistryController(
     private fun updateUIForEmptyState() {
         val settings = KafkaToolWindowSettings.getInstance()
         val config = settings.getOrCreateConfig(dataManager.getSchemaRegistryConfigId())
-        val hasFilters = !config.schemaFilterName.isNullOrBlank() || settings.showFavoriteSchema
-        val hasSchemas = dataManager.getSchemas().isNotEmpty()
+        val hidden = dataManager.hiddenSchemas
+        val shown = dataManager.getSchemas().size
 
-        if (!hasSchemas && !hasFilters) {
+        updateHiddenNote(hidden)
+
+        // Schemas that are only hidden, by a filter or by a setting, are no reason to ask for the first one.
+        if (ClusterDataFilters.isRegistryEmpty(shown, config.schemaFilterName, settings.showFavoriteSchema, hidden)) {
             updateEmptyPanel()
             cardLayout.show(wrapperPanel, "EMPTY")
         } else {
@@ -121,8 +162,17 @@ internal class KafkaRegistryController(
             (decoratedTableComponent.layout as? BorderLayout)
                 ?.getLayoutComponent(BorderLayout.NORTH)?.isVisible = true
             dataTable.tableHeader?.isVisible = true
-            if (!hasSchemas) updateEmptyText()
+            if (shown == 0) updateEmptyText()
         }
+    }
+
+    private fun updateHiddenNote(hidden: HiddenSchemas) {
+        val parts = listOfNotNull(
+            hidden.internal.takeIf { it > 0 }?.let { KafkaMessagesBundle.message("schemas.hidden.internal", it) },
+            hidden.otherTopics.takeIf { it > 0 }?.let { KafkaMessagesBundle.message("schemas.hidden.other.topics", it) }
+        )
+        hiddenNote.isVisible = parts.isNotEmpty()
+        hiddenNote.text = KafkaMessagesBundle.message("schemas.hidden.note", parts.joinToString(", "))
     }
 
     private fun updateEmptyPanel() {
@@ -137,20 +187,51 @@ internal class KafkaRegistryController(
     }
 
     private fun updateEmptyText() {
-        val clusterConfig = KafkaToolWindowSettings.getInstance().getOrCreateConfig(dataManager.getSchemaRegistryConfigId())
+        val settings = KafkaToolWindowSettings.getInstance()
+        val clusterConfig = settings.getOrCreateConfig(dataManager.getSchemaRegistryConfigId())
+        val hidden = dataManager.hiddenSchemas
+        val filtered = !clusterConfig.schemaFilterName.isNullOrBlank() || settings.showFavoriteSchema
+
         dataTable.emptyText.clear()
-        dataTable.emptyText.appendText(
-            KafkaMessagesBundle.message("schemas.empty.text.filter"),
-            StatusText.DEFAULT_ATTRIBUTES
-        )
-        dataTable.emptyText.appendSecondaryText(
-            KafkaMessagesBundle.message("topics.empty.text.filter.additional"),
-            SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES
-        ) {
-            clusterConfig.schemaFilterName = null
-            KafkaToolWindowSettings.getInstance().showFavoriteSchema = false
-            searchTextField.text = ""
-            dataManager.refilterSchemas()
+        if (filtered || hidden.total == 0) {
+            dataTable.emptyText.appendText(
+                KafkaMessagesBundle.message("schemas.empty.text.filter"),
+                StatusText.DEFAULT_ATTRIBUTES
+            )
+            dataTable.emptyText.appendSecondaryText(
+                KafkaMessagesBundle.message("topics.empty.text.filter.additional"),
+                SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES
+            ) {
+                clusterConfig.schemaFilterName = null
+                settings.showFavoriteSchema = false
+                searchTextField.text = ""
+                dataManager.refilterSchemas()
+            }
+        } else {
+            dataTable.emptyText.appendText(
+                KafkaMessagesBundle.message("schemas.empty.text.hidden"),
+                StatusText.DEFAULT_ATTRIBUTES
+            )
+        }
+
+        // What is hidden is one click away.
+        if (hidden.internal > 0) {
+            dataTable.emptyText.appendLine(
+                KafkaMessagesBundle.message("schemas.empty.text.show.internal", hidden.internal),
+                SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES
+            ) {
+                settings.showInternalSchemas = true
+                dataManager.refilterSchemas()
+            }
+        }
+        if (hidden.otherTopics > 0) {
+            dataTable.emptyText.appendLine(
+                KafkaMessagesBundle.message("schemas.empty.text.show.other.topics", hidden.otherTopics),
+                SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES
+            ) {
+                settings.showOtherTopicsSchemas = true
+                dataManager.refilterSchemas()
+            }
         }
     }
 
@@ -190,9 +271,14 @@ internal class KafkaRegistryController(
         return listOfNotNull(
             CustomComponentActionImpl(searchTextField),
             CustomComponentActionImpl(countFilter),
-            showFavoriteSchemasAction
+            showFavoriteSchemasAction,
+            // Subjects are a thing of a Confluent registry, the schemas of Glue have no such names.
+            showInternalSchemasAction.takeIf { registryType == KafkaRegistryType.CONFLUENT },
+            showOtherTopicsSchemasAction.takeIf { registryType == KafkaRegistryType.CONFLUENT }
         )
     }
+
+    override fun createStatusNotes(): List<JComponent> = listOf(hiddenNote)
 
     override fun createTopRightToolbarActions(): List<AnAction> {
         val actionManager = ActionManager.getInstance()

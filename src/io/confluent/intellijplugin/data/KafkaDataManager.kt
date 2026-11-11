@@ -148,6 +148,10 @@ class KafkaDataManager(
             ?: client.glueRegistryClient?.listSchemas(filter = null)?.first
             ?: emptyList()
 
+    override suspend fun listVisibleTopicNames(): Set<String>? = withContext(Dispatchers.IO) {
+        client.getVisibleTopicNames()
+    }
+
     override suspend fun updateSchemaList(
         schemas: List<KafkaSchemaInfo>
     ): Pair<List<KafkaSchemaInfo>, Throwable?> = withContext(Dispatchers.IO) {

@@ -38,7 +38,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.apache.kafka.clients.consumer.OffsetAndMetadata
@@ -78,6 +80,20 @@ abstract class BaseClusterDataManager(
         }
     }
 
+    // The topics the user can see, to hide the schemas of the others. Not knowing them hides nothing.
+    private val visibleTopics: ExpiringSingleFlight<VisibleTopics> by lazy {
+        ExpiringSingleFlight(schemaScope, VISIBLE_TOPICS_TTL_MS) {
+            catchFailures(onFailure = { t ->
+                thisLogger().warn("Failed to list the topics of connection $connectionId for the schemas", t)
+                VisibleTopics(null)
+            }) {
+                thisLogger().timed("Listing the topics of connection $connectionId for the schemas") {
+                    VisibleTopics(listVisibleTopicNames())
+                }
+            }
+        }
+    }
+
     // The list of the tool window, which follows its settings without listing the registry again.
     private val schemaList: SchemaRegistryList by lazy {
         SchemaRegistryList(
@@ -86,7 +102,8 @@ abstract class BaseClusterDataManager(
             cachedListing = schemaListing::peek,
             settings = ::currentSchemaListSettings,
             model = { schemaRegistryModel },
-            refreshFromRegistry = { schemaRegistryModel?.let { updater.invokeRefreshModel(it) } }
+            refreshFromRegistry = { schemaRegistryModel?.let { updater.invokeRefreshModel(it) } },
+            prepare = { if (hidesSchemasOfOtherTopics()) visibleTopics.get() }
         )
     }
 
@@ -295,6 +312,9 @@ abstract class BaseClusterDataManager(
 
     fun getSchemas(): List<KafkaSchemaInfo> = schemaRegistryModel?.data ?: emptyList()
 
+    /** How many schemas the settings keep out of the tool window, as of the list that is shown there. */
+    internal val hiddenSchemas: HiddenSchemas get() = schemaList.hidden
+
     fun getCachedSchema(name: String): KafkaSchemaInfo? =
         schemaRegistryModel?.data?.firstOrNull { it.name == name }
 
@@ -302,7 +322,7 @@ abstract class BaseClusterDataManager(
 
     /**
      * Whether the registry has the schema [name], as far as that is known without asking it. Also true for schemas
-     * that the list of the tool window leaves out, because of its filter or its limit.
+     * that the list of the tool window leaves out, because of its filter, its limit, or the schemas it hides.
      */
     fun schemaExists(name: String): Boolean =
         schemaListing.peek()?.contains(name) ?: (getCachedSchema(name) != null)
@@ -361,8 +381,19 @@ abstract class BaseClusterDataManager(
 
     private fun currentSchemaListSettings(): SchemaListSettings = SchemaListSettingsReader.read(
         toolWindow = KafkaToolWindowSettings.getInstance(),
-        config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId())
+        config = KafkaToolWindowSettings.getInstance().getOrCreateConfig(getSchemaRegistryConfigId()),
+        registryType = registryType,
+        visibleTopics = { visibleTopics.peek()?.names }
     )
+
+    private fun hidesSchemasOfOtherTopics() =
+        SchemaListSettingsReader.hidesSchemasOfOtherTopics(registryType, KafkaToolWindowSettings.getInstance())
+
+    /**
+     * The names of the topics the user can see, internal ones included, or `null` if that can not be told.
+     * What the cluster lists for the user, so what the user is not allowed to describe is not in it.
+     */
+    protected open suspend fun listVisibleTopicNames(): Set<String>? = null
 
     abstract suspend fun getLatestVersionInfo(schemaName: String): SchemaVersionInfo?
 
@@ -549,10 +580,24 @@ abstract class BaseClusterDataManager(
             // The first load can use what the editors listed already, a refresh is the way to see what others changed
             // in the registry, so it lists again. The editors profit from that, too.
             val listing = runBlockingMaybeCancellable {
-                if (model.isInitedByFirstTime) schemaListing.refresh() else schemaListing.get()
+                loadSchemaListing(refresh = model.isInitedByFirstTime)
             }
             schemaList.view(listing)
         }
+    }
+
+    /**
+     * What the registry lists, for the tool window. The topics the user can see are needed to hide the schemas of the
+     * others, so they are asked at the same time, and the same way (again on a refresh).
+     */
+    private suspend fun loadSchemaListing(refresh: Boolean): SchemaListing = coroutineScope {
+        val topics = if (hidesSchemasOfOtherTopics()) async {
+            if (refresh) visibleTopics.refresh() else visibleTopics.get()
+        } else null
+
+        val listing = if (refresh) schemaListing.refresh() else schemaListing.get()
+        topics?.await()
+        listing
     }
 
     private fun createSchemaVersionsStorage() = FieldGroupsDataModelStorage<String, List<Long>>(updater) { schemaName ->
@@ -568,6 +613,9 @@ abstract class BaseClusterDataManager(
     }
 
     private companion object {
+        // The topics of a cluster change rarely. A refresh of the schemas lists them again.
+        const val VISIBLE_TOPICS_TTL_MS = 5 * 60_000L
+
         // How long the names of all the schemas are kept. The editors show older ones while the registry is asked again.
         const val SCHEMA_NAMES_TTL_MS = 60_000L
     }

@@ -23,6 +23,9 @@ internal class SchemaListing(val schemas: List<KafkaSchemaInfo>) {
     operator fun contains(name: String): Boolean = name in nameSet
 }
 
+/** The names of the topics that the user can see, or `null` if they could not be listed. */
+internal class VisibleTopics(val names: Set<String>?)
+
 /**
  * Keeps the schema list of the tool window in step with the settings that shape it (filter, limit, favorites, ...)
  * without asking the registry again: it is made out of the [SchemaListing] that was loaded last. A change of the
@@ -33,6 +36,7 @@ internal class SchemaListing(val schemas: List<KafkaSchemaInfo>) {
  *
  * @param cachedListing the listing that was loaded last, or `null` if there is none
  * @param refreshFromRegistry makes the model load the list from the registry, for when there is no listing
+ * @param prepare gets what the [settings] need before a change of them is applied, e.g. the topics that are visible
  */
 internal class SchemaRegistryList(
     private val scope: CoroutineScope,
@@ -41,7 +45,8 @@ internal class SchemaRegistryList(
     private val settings: () -> SchemaListSettings,
     private val model: () -> ObjectDataModel<KafkaSchemaInfo>?,
     private val refreshFromRegistry: () -> Unit,
-    private val detailsDelayMillis: Long = DETAILS_DELAY_MS
+    private val detailsDelayMillis: Long = DETAILS_DELAY_MS,
+    private val prepare: suspend () -> Unit = {}
 ) {
     // Guards the changes of the model, and the details job.
     private val lock = Any()
@@ -50,9 +55,15 @@ internal class SchemaRegistryList(
     // Set while a change of the settings waits to be applied: that one will see the latest settings.
     private val applyQueued = AtomicBoolean(false)
 
+    /** What the settings left out of the list that was shown last. It is up to date when the model tells of a change. */
+    @Volatile
+    var hidden: HiddenSchemas = HiddenSchemas.NONE
+        private set
+
     /** The list to show for the [listing] the registry gave, and whether the limit left out more. */
     fun view(listing: SchemaListing): Pair<List<KafkaSchemaInfo>, Boolean> {
         val view = ClusterDataFilters.schemaListView(listing.schemas, settings())
+        hidden = view.hidden
         return withKnownDetails(view.schemas, model()?.data) to view.hasMore
     }
 
@@ -65,6 +76,16 @@ internal class SchemaRegistryList(
 
         scope.launch {
             applyQueued.set(false)
+            try {
+                prepare()
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Not knowing what the settings need must not keep the list from following them.
+                thisLogger().warn("Failed to prepare the schema list for its settings", e)
+            }
             apply()
         }
     }
@@ -100,6 +121,7 @@ internal class SchemaRegistryList(
                 null
             } else {
                 val view = ClusterDataFilters.schemaListView(listing.schemas, settings)
+                hidden = view.hidden
                 withKnownDetails(view.schemas, model.data).also { model.setData(it, view.hasMore) }
             }
         }

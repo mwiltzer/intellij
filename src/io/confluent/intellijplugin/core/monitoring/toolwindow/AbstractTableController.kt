@@ -73,6 +73,9 @@ abstract class AbstractTableController<T : RemoteInfo> : ComponentController {
     protected open fun getAdditionalActions(): List<AnAction> = emptyList()
     protected open fun getAdditionalContextActions(): List<AnAction> = emptyList()
 
+    /** Notes to show below the table, next to the one for the limit, e.g. that rows are hidden. */
+    protected open fun createStatusNotes(): List<JComponent> = emptyList()
+
     private fun setupActions() {
         val actionGroup = DefaultActionGroup().apply {
             addAll(getAdditionalActions())
@@ -241,6 +244,12 @@ abstract class AbstractTableController<T : RemoteInfo> : ComponentController {
         val south = panel {
             row {
                 cell(notifyLimitLabel).align(Align.FILL).resizableColumn()
+            }
+
+            createStatusNotes().forEach { note ->
+                row {
+                    cell(note).align(Align.FILL).resizableColumn()
+                }
             }
 
             notifyErrorPanel = panel {

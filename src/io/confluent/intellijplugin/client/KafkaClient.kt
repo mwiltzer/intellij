@@ -191,6 +191,14 @@ class KafkaClient(
         return topicNames.map { TopicPresentable(name = it) }.sortedTopics()
     }
 
+    /**
+     * The names of all the topics that the cluster lists for the user, internal ones included. Unlike [getTopics],
+     * it does not check which of them are virtual, which takes a request for each of them.
+     */
+    fun getVisibleTopicNames(): Set<String> = thisLogger().timed("Listing the topics the user can see") {
+        kafkaAdminNotNull.listTopics(ListTopicsOptions().listInternal(true)).names().get() ?: emptySet()
+    }
+
     suspend fun getDetailedTopicsInfo(topicNames: List<String>): List<TopicPresentable> {
         val (describedTopics, nonParsed) = describeTopics(topicNames)
 

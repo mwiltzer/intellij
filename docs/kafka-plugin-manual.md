@@ -375,15 +375,28 @@ favorite: right-click a schema and select **Add to Favorites**.
 
 ---
 
-### Filter schemas
+### Filter and hide schemas
 
 A Schema Registry can have thousands of schemas. The **Schema Registry** section helps you to find the ones you work
 with:
 
 * Type in the filter field to show only the schemas whose names contain the text, ignoring case.
+* With a Confluent Schema Registry, two switches in the toolbar decide which schemas are hidden. Both are off by
+  default:
+    * Click ![Show Internal Schemas](icons/app.actions.toggleVisibility.svg) (**Show Internal Schemas**) to also show
+      the schemas whose names start with an underscore, such as those of internal topics.
+    * Click **Show Schemas of Other Topics** to also show the schemas of topics that are not in your topic list, for
+      example because you are not allowed to see them. This needs the schema names to follow the `<topic>-key` and
+      `<topic>-value` pattern. Schemas that do not belong to a single topic, for example those named after a record,
+      are always shown.
 
-The section keeps the list of schemas it got from the Schema Registry for a minute. Filtering, changing the limit, and
-marking favorites use that list, so they respond right away. To ask the Schema Registry again, refresh the section.
+A line below the table tells how many schemas are hidden, and when all of them are, the empty state has links to show
+them. Favorite schemas are never hidden. A schema that is registered before its topic exists stays hidden until the
+topic exists or you click **Show Schemas of Other Topics**.
+
+The section keeps the list of schemas it got from the Schema Registry for a minute. Filtering, changing the limit,
+marking favorites, and the switches use that list, so they respond right away. To ask the Schema Registry again,
+refresh the section.
 
 ### Compare schema versions
 
