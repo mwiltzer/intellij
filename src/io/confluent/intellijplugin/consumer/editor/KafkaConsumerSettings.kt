@@ -5,6 +5,7 @@ import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.dsl.builder.panel
 import io.confluent.intellijplugin.common.settings.StorageConsumerConfig
 import io.confluent.intellijplugin.core.ui.row
+import io.confluent.intellijplugin.util.KafkaConfigDefs
 import io.confluent.intellijplugin.util.KafkaMessagesBundle
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import javax.swing.JTextField
@@ -43,10 +44,11 @@ class KafkaConsumerSettings(
     private val unsupportedProperties: Set<String> = ALL_PROPERTIES - supportedProperties
 
     init {
+        val defaultsByName = KafkaConfigDefs.consumer().configKeys()
         ALL_PROPERTIES.forEach {
 
             val textField = JTextField().apply {
-                val defaults = ConsumerConfig.configDef().configKeys()[it]
+                val defaults = defaultsByName[it]
                 text = defaults?.defaultValue?.toString()
                 toolTipText = if (it in unsupportedProperties) {
                     KafkaMessagesBundle.message("ccloud.option.not.supported.tooltip")
@@ -65,7 +67,7 @@ class KafkaConsumerSettings(
     }
 
     fun applyConfig(config: StorageConsumerConfig) {
-        val defaults = ConsumerConfig.configDef().configKeys()
+        val defaults = KafkaConfigDefs.consumer().configKeys()
         propertiesFields.forEach {
             it.value.text = defaults[it.key]?.defaultValue?.toString()
         }
@@ -80,7 +82,7 @@ class KafkaConsumerSettings(
     }
 
     fun getProperties(): Map<String, String> {
-        val defaults = ConsumerConfig.configDef().configKeys()
+        val defaults = KafkaConfigDefs.consumer().configKeys()
         return propertiesFields.filter {
             it.key !in unsupportedProperties &&
                     it.value.text != defaults[it.key]?.defaultValue?.toString() &&
