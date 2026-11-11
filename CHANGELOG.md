@@ -25,6 +25,7 @@ All noteworthy changes to this plugin will be documented in this file.
 - Restarting the Confluent Cloud producer right after stopping it no longer lets the stopped run, still finishing its last produce request, stop the new run. While a producer is stopping, its button shows "Stopping..." and is disabled until that request finishes, so a second click no longer starts a new run.
 - Stopping the Confluent Cloud producer while it is waiting out rate limiting (429) now takes effect right away, instead of after the wait (up to about 3 minutes). A produce request already sent still finishes, so its record is reported.
 - Confluent Cloud tokens now refresh well before they expire, at a random point between 70% and 90% of the lifetime stated in each token, instead of a few seconds before. A slow refresh no longer leaves requests going out with an expired token.
+- Confluent Cloud: the caches for clusters, Schema Registries and per-cluster data can be used from several threads at once. Loading several clusters in parallel could create duplicate cluster caches and data managers or lose cached entries, and refreshing while clusters were still loading could fail with a `ConcurrentModificationException`. An environment without a Schema Registry is now remembered instead of being asked again and again
 
 ## 253.25910.2
 ### Fixed

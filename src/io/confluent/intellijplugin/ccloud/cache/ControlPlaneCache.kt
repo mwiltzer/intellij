@@ -4,26 +4,39 @@ import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.openapi.project.Project
 import io.confluent.intellijplugin.ccloud.client.CCloudRestClient
 import io.confluent.intellijplugin.ccloud.config.CloudConfig
+import io.confluent.intellijplugin.ccloud.fetcher.ControlPlaneFetcher
 import io.confluent.intellijplugin.ccloud.fetcher.ControlPlaneFetcherImpl
 import io.confluent.intellijplugin.ccloud.model.Cluster
 import io.confluent.intellijplugin.ccloud.model.Environment
 import io.confluent.intellijplugin.ccloud.model.SchemaRegistry
 import io.confluent.intellijplugin.core.monitoring.connection.MonitoringClient
+import org.jetbrains.annotations.VisibleForTesting
+import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Control plane cache for organizational resources (environments, clusters, schema registries).
  * Caches data from ControlPlaneFetcherImpl to reduce API calls. Use refresh*() methods to update cache.
+ * Safe to use from several threads: tree nodes, background refreshes and the editors all read it.
  */
-class ControlPlaneCache(
-    project: Project?
+class ControlPlaneCache @VisibleForTesting internal constructor(
+    project: Project?,
+    fetcher: ControlPlaneFetcher?
 ) : MonitoringClient(project) {
 
-    private var fetcher: ControlPlaneFetcherImpl? = null
+    /** Primary constructor for production use. */
+    constructor(project: Project?) : this(project, null)
+
+    @Volatile
+    private var fetcher: ControlPlaneFetcher? = fetcher
 
     // Cached data
+    @Volatile
     private var cachedEnvironments: List<Environment>? = null
-    private val cachedClusters = mutableMapOf<String, List<Cluster>>()
-    private val cachedSchemaRegistry = mutableMapOf<String, SchemaRegistry?>()
+    private val cachedClusters = ConcurrentHashMap<String, List<Cluster>>()
+
+    // An empty Optional records that the environment has no Schema Registry, so it is not asked for again.
+    private val cachedSchemaRegistry = ConcurrentHashMap<String, Optional<SchemaRegistry>>()
 
     override fun getRealUri(): String = CloudConfig.CONTROL_PLANE_BASE_URL
 
@@ -47,22 +60,29 @@ class ControlPlaneCache(
     fun getEnvironments(): List<Environment> = cachedEnvironments ?: emptyList()
 
     /** Get clusters for an environment (fetches on first access, then cached). */
-    fun getKafkaClusters(environmentId: String): List<Cluster> = cachedClusters.getOrPut(environmentId) {
-        fetcher?.let { f ->
-            runBlockingMaybeCancellable { f.getKafkaClusters(environmentId) }
-        } ?: emptyList()
+    fun getKafkaClusters(environmentId: String): List<Cluster> {
+        cachedClusters[environmentId]?.let { return it }
+        val f = fetcher ?: return emptyList()
+        val clusters = runBlockingMaybeCancellable { f.getKafkaClusters(environmentId) }
+        // A refresh may have finished while fetching; its (newer) result wins.
+        return cachedClusters.putIfAbsent(environmentId, clusters) ?: clusters
     }
 
     fun getCachedKafkaClusters(environmentId: String): List<Cluster>? = cachedClusters[environmentId]
 
-    /** Get schema registry for an environment (fetches on first access, then cached). Returns null if none exists. */
-    fun getSchemaRegistry(environmentId: String): SchemaRegistry? = cachedSchemaRegistry.getOrPut(environmentId) {
-        fetcher?.let { f ->
-            runBlockingMaybeCancellable { f.getSchemaRegistry(environmentId) }
-        }
+    /**
+     * Get schema registry for an environment (fetches on first access, then cached, also when the environment
+     * has none). Returns null if none exists.
+     */
+    fun getSchemaRegistry(environmentId: String): SchemaRegistry? {
+        cachedSchemaRegistry[environmentId]?.let { return it.orElse(null) }
+        val f = fetcher ?: return null
+        val fetched = Optional.ofNullable(runBlockingMaybeCancellable { f.getSchemaRegistry(environmentId) })
+        return (cachedSchemaRegistry.putIfAbsent(environmentId, fetched) ?: fetched).orElse(null)
     }
 
-    fun getCachedSchemaRegistry(environmentId: String): SchemaRegistry? = cachedSchemaRegistry[environmentId]
+    fun getCachedSchemaRegistry(environmentId: String): SchemaRegistry? =
+        cachedSchemaRegistry[environmentId]?.orElse(null)
 
     suspend fun refreshEnvironments(): List<Environment> {
         cachedEnvironments = fetcher?.let { f ->
@@ -80,10 +100,10 @@ class ControlPlaneCache(
     }
 
     suspend fun refreshSchemaRegistry(environmentId: String): SchemaRegistry? {
-        val registry = fetcher?.let { f ->
-            f.getSchemaRegistry(environmentId)
-        }
-        cachedSchemaRegistry[environmentId] = registry
+        // Without a fetcher nothing was asked, so nothing may be cached as "no schema registry".
+        val f = fetcher ?: return null
+        val registry = f.getSchemaRegistry(environmentId)
+        cachedSchemaRegistry[environmentId] = Optional.ofNullable(registry)
         return registry
     }
 
