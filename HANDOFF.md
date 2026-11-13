@@ -1,6 +1,6 @@
 # Handoff: OAuth for Schema Registry and performance work, split into pull requests
 
-State of 2026-11-12, after the rebase onto upstream `main` (`c69c01a0`). This file exists only on the branch
+State of 2026-11-13, after the rebase onto upstream `main` (`ca42fde6`). This file exists only on the branch
 `handoff/pr-split`. That branch is the complete result (identical to `backup/all-optimizations`) plus this note and
 the pointers to it in `AGENTS.md`, `CLAUDE.md` and `.github/copilot-instructions.md`. **Never open a pull request from
 it, never merge it, and never base new work on it.**
@@ -17,7 +17,7 @@ it, never merge it, and never base new work on it.**
   plugin load in IntelliJ IDEA 2026.3, which upstream #675 broke (see "Facts"). The backup contains it, so a build from
   this branch requires IDEA 2026.3.
 - Every branch passes the full test suite on its own. Merging all of them gives exactly the backup, apart from the two
-  intended differences listed below; the backup passes all 2,981 tests and `buildPlugin`.
+  intended differences listed below; the backup passes all 3,026 tests and `buildPlugin`.
 - **Decided on 2026-11-11: upstream first, the fork as fallback.** The pull requests go to `confluentinc/intellij`;
   whatever upstream does not take lives on in the fork. Steps 1 and 2 of the upstream plan below are done: the fork's
   `main` equals upstream `main`, and every branch is rebased onto it and tested. **Next step:** step 3.
@@ -52,35 +52,35 @@ main
 
 | ID  | Branch                                 | Based on | Commit     | What it does                                                                                                                                                                                                                                                  | Tests        |
 |-----|----------------------------------------|----------|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------|
-| O   | `oauth-4-schem-reg`                    | `main`   | `87e8b799` | 4 commits: the user's OAuth commit `88cc4ed2` (includes Kafka clients 4.0.0 → 4.1.2), `d80af1e9` Kafka config classes built with the plugin class loader, `ef5eaffb` one token request for concurrent calls, `87e8b799` OAuth fields checked by Test Connection | 2,079        |
-| L1  | `chore/dependency-bumps`               | O        | `20d01e87` | moshi 1.15.2, JUnit 5.14.4 / platform 1.14.4, mockito-kotlin 6.4.0, kotlin-metadata 2.2.21, Sentry Gradle plugin 5.12.2, compiler flag `-Xannotation-default-target=first-only`                                                                                | 2,079        |
-| L2  | `fix/avro-fixed-decimal`               | O        | `7fa4b451` | Random data for an Avro decimal stored as `fixed` failed                                                                                                                                                                                                      | 2,081        |
-| L3  | `fix/ccloud-cache-concurrency`         | O        | `f1565d1a` | Confluent Cloud caches safe for concurrent use                                                                                                                                                                                                                | 2,092        |
-| L4  | `perf/virtual-topic-detection`         | O        | `5ea57eb3` | Virtual topics are detected once per topic; a topic the user may not describe no longer breaks the detection                                                                                                                                                  | 2,103        |
-| L5  | `fix/install-notification-per-project` | O        | `7d57089e` | One "plugin installed" notification per open project (the shared one caused a SEVERE "BalloonImpl already disposed")                                                                                                                                         | 2,084        |
-| L6  | `fix/bdt-url-handler-classcast`        | O        | `3e8888c2` | No `ClassCastException` stack traces in `idea.log` when Big Data Tools is installed                                                                                                                                                                           | 2,086        |
-| L7  | `perf/record-table-memory`             | O        | `469af727` | Record tables keep only the text of keys and values (about 5× less heap)                                                                                                                                                                                      | 2,081        |
-| L8  | `perf/consumer-filter`                 | O        | `94ad1860` | Consumer filter: regex compiled once, checked while typing, matched against the text shown                                                                                                                                                                    | 2,112        |
-| L9  | `feat/avro-json-replay`                | L2       | `274c4e49` | Produce Avro values from JSON as tools like AKHQ show it, to replay records                                                                                                                                                                                   | 2,171        |
-| L11 | `feat/producer-schema-version`         | O        | `4ba54e42` | The producer can write with an older version of the registry schema                                                                                                                                                                                           | 2,130        |
-| L12 | `fix/registry-error-hints`             | O        | `731041a9` | Says why the Schema Registry is not available (untrusted TLS certificate, rejected OAuth token, …); manual: a custom truststore replaces the default one                                                                                                       | 2,098        |
-| L13 | `perf/registry-connection-check`       | O        | `5f1dfc0a` | The connection check asks the registry for one subject instead of all                                                                                                                                                                                         | 2,088        |
-| S0  | `perf/log-slow-loads`                  | O        | `5b3ae7cf` | Slow topic loads (≥ 1 s) logged at INFO; a cancelled load ends quietly instead of being logged and shown as an error                                                                                                                                          | 2,096        |
-| S1  | `perf/editor-schema-loading`           | S0       | `7bbb196d` | Editors: one shared listing of the schema names (kept a minute, older names shown while refreshing), formats looked up on demand and a few at a time, saved schema kept by name, CCloud names-only entries no longer taken for Avro, SR client cache 1000 | 2,228        |
-| S2  | `perf/schema-registry-section`         | S1       | `f85ed5a5` | The Schema Registry section is shown from one listing; filter, limit and favorites re-slice it; the filter is a case-insensitive "contains" instead of a regex                                                                                                | 2,301        |
-| S3  | `feat/hide-internal-and-other-schemas` | S2       | `1953ad67` | Hides the schemas of internal topics and of topics the user can not see, with two switches (default off)                                                                                                                                                     | 2,381        |
-| S4  | `feat/editor-schema-order`             | S3       | `8ae4a266` | The editors list the schemas that matter first (the topic's schemas, favorites, then the rest, internal ones last)                                                                                                                                            | 2,409        |
-| S5  | `feat/schema-prefix-filter`            | S4       | `197de5c0` | `^prefix` filter in the Schema Registry section, served by `GET /subjects?subjectPrefix=`                                                                                                                                                                      | 2,533        |
-| S6  | `perf/editor-topic-schema-lookup`      | S5       | `c382a088` | Editors find the topic's schema by prefix without waiting for the full listing; names kept 5 minutes where prefix listing works; logs of the UI-thread wait and of the selection reason                                                                       | 2,604        |
-| L10 | `fix/schema-combo-width`               | S1       | `64f9957a` | Long schema names no longer push the buttons next to the schema list out of view                                                                                                                                                                              | 2,230        |
-| L14 | `feat/record-schema-id`                | S1       | `d25fbc53` | The details of a consumed record show the schema ID and the subjects and versions it is registered as (called C3 in the session notes)                                                                                                                        | 2,348        |
-| F1  | `fork/idea-2026.3-charts`              | `main`   | `a2e2da85` | Fork only, never a pull request: the built plugin requires `intellij.charts.shared` instead of `intellij.charts`, so that it loads in IntelliJ IDEA 2026.3 (broken by upstream #675). Compiling and the tests stay on 2026.1                                  | 1,983        |
-| –   | `backup/all-optimizations`             | O        | `963334f2` | The whole bundle as one WIP commit: the target state and the reference for resolving conflicts. Never merge it.                                                                                                                                              | 2,981        |
+| O   | `oauth-4-schem-reg`                    | `main`   | `9a7a8ec2` | 4 commits: the user's OAuth commit `17e96f2f` (includes Kafka clients 4.0.0 → 4.1.2), `c0de4f9a` Kafka config classes built with the plugin class loader, `7c001103` one token request for concurrent calls, `9a7a8ec2` OAuth fields checked by Test Connection | 2,124        |
+| L1  | `chore/dependency-bumps`               | O        | `3669de97` | moshi 1.15.2, JUnit 5.14.4 / platform 1.14.4, mockito-kotlin 6.4.0, kotlin-metadata 2.2.21, Sentry Gradle plugin 5.12.2, compiler flag `-Xannotation-default-target=first-only`                                                                                | 2,124        |
+| L2  | `fix/avro-fixed-decimal`               | O        | `3a31210f` | Random data for an Avro decimal stored as `fixed` failed                                                                                                                                                                                                      | 2,126        |
+| L3  | `fix/ccloud-cache-concurrency`         | O        | `7e7caf99` | Confluent Cloud caches safe for concurrent use                                                                                                                                                                                                                | 2,137        |
+| L4  | `perf/virtual-topic-detection`         | O        | `69f10b0f` | Virtual topics are detected once per topic; a topic the user may not describe no longer breaks the detection                                                                                                                                                  | 2,148        |
+| L5  | `fix/install-notification-per-project` | O        | `2b9d34c0` | One "plugin installed" notification per open project (the shared one caused a SEVERE "BalloonImpl already disposed")                                                                                                                                         | 2,129        |
+| L6  | `fix/bdt-url-handler-classcast`        | O        | `31dfc283` | No `ClassCastException` stack traces in `idea.log` when Big Data Tools is installed                                                                                                                                                                           | 2,131        |
+| L7  | `perf/record-table-memory`             | O        | `8057f537` | Record tables keep only the text of keys and values (about 5× less heap)                                                                                                                                                                                      | 2,126        |
+| L8  | `perf/consumer-filter`                 | O        | `4269ac14` | Consumer filter: regex compiled once, checked while typing, matched against the text shown                                                                                                                                                                    | 2,157        |
+| L9  | `feat/avro-json-replay`                | L2       | `b015c012` | Produce Avro values from JSON as tools like AKHQ show it, to replay records                                                                                                                                                                                   | 2,216        |
+| L11 | `feat/producer-schema-version`         | O        | `b3410fcc` | The producer can write with an older version of the registry schema                                                                                                                                                                                           | 2,175        |
+| L12 | `fix/registry-error-hints`             | O        | `f5983c34` | Says why the Schema Registry is not available (untrusted TLS certificate, rejected OAuth token, …); manual: a custom truststore replaces the default one                                                                                                       | 2,143        |
+| L13 | `perf/registry-connection-check`       | O        | `131c10c6` | The connection check asks the registry for one subject instead of all                                                                                                                                                                                         | 2,133        |
+| S0  | `perf/log-slow-loads`                  | O        | `e9ed15f4` | Slow topic loads (≥ 1 s) logged at INFO; a cancelled load ends quietly instead of being logged and shown as an error                                                                                                                                          | 2,141        |
+| S1  | `perf/editor-schema-loading`           | S0       | `eac6ccd0` | Editors: one shared listing of the schema names (kept a minute, older names shown while refreshing), formats looked up on demand and a few at a time, saved schema kept by name, CCloud names-only entries no longer taken for Avro, SR client cache 1000 | 2,273        |
+| S2  | `perf/schema-registry-section`         | S1       | `7924c693` | The Schema Registry section is shown from one listing; filter, limit and favorites re-slice it; the filter is a case-insensitive "contains" instead of a regex                                                                                                | 2,346        |
+| S3  | `feat/hide-internal-and-other-schemas` | S2       | `ba1c5b34` | Hides the schemas of internal topics and of topics the user can not see, with two switches (default off)                                                                                                                                                     | 2,426        |
+| S4  | `feat/editor-schema-order`             | S3       | `57c32378` | The editors list the schemas that matter first (the topic's schemas, favorites, then the rest, internal ones last)                                                                                                                                            | 2,454        |
+| S5  | `feat/schema-prefix-filter`            | S4       | `90a08330` | `^prefix` filter in the Schema Registry section, served by `GET /subjects?subjectPrefix=`                                                                                                                                                                      | 2,578        |
+| S6  | `perf/editor-topic-schema-lookup`      | S5       | `e62b8d67` | Editors find the topic's schema by prefix without waiting for the full listing; names kept 5 minutes where prefix listing works; logs of the UI-thread wait and of the selection reason                                                                       | 2,649        |
+| L10 | `fix/schema-combo-width`               | S1       | `3fbd5658` | Long schema names no longer push the buttons next to the schema list out of view                                                                                                                                                                              | 2,275        |
+| L14 | `feat/record-schema-id`                | S1       | `2c0c0a45` | The details of a consumed record show the schema ID and the subjects and versions it is registered as (called C3 in the session notes)                                                                                                                        | 2,393        |
+| F1  | `fork/idea-2026.3-charts`              | `main`   | `97f9ac6d` | Fork only, never a pull request: the built plugin requires `intellij.charts.shared` instead of `intellij.charts`, so that it loads in IntelliJ IDEA 2026.3 (broken by upstream #675). Compiling and the tests stay on 2026.1                                  | 2,028        |
+| –   | `backup/all-optimizations`             | O        | `e86e4704` | The whole bundle as one WIP commit: the target state and the reference for resolving conflicts. Never merge it.                                                                                                                                              | 3,026        |
 | –   | `handoff/pr-split`                     | backup   | –          | The backup plus this note. Never merge it.                                                                                                                                                                                                                   | –            |
 
-The backup, which is all of them together: **2,981 tests, 0 failures, 2 known skips, `buildPlugin` OK.** Every branch
+The backup, which is all of them together: **3,026 tests, 0 failures, 2 known skips, `buildPlugin` OK.** Every branch
 has its own tests plus all of upstream's. The commit message of each branch is written to serve as the description of
-its pull request. The commit IDs are those after the rebase onto upstream `main` `c69c01a0` (see "Keeping up with
+its pull request. The commit IDs are those after the rebase onto upstream `main` `ca42fde6` (see "Keeping up with
 upstream"); earlier versions of this file list the ones before. Once `integration` exists, it replaces
 `handoff/pr-split` as the branch with everything.
 
@@ -120,6 +120,17 @@ in the fork. The fork is set up so that this needs no switch later:
   L7, L9 and L11 change other parts of `CCloudProducerClient` (record text, Avro JSON, schema versions), L14 other
   parts of `DataPlaneFetcherImpl`, and none of our branches use what upstream changed. Both rebases had no conflict
   apart from `CHANGELOG.md`, and every branch compiled and passed its tests.
+- On 2026-11-13 upstream `main` moved to `ca42fde6`: #672 refreshes Confluent Cloud tokens at 70–90 % of their real
+  lifetime, #643 skips unserializable connection properties instead of failing the whole save, #678 derives the AWS
+  regions from the SDK, and #668 refactors the tests. #668 is the one that mattered: it moved the test fixtures to
+  `test/resources/fixtures/<area>/` (`ccloud-resources-mock-responses/` became `fixtures/ccloud-resources/`,
+  `scaffold-mock-responses/` became `fixtures/scaffold/`), deleted `ccloud/util/ResourceLoader.kt`, and replaced the
+  per-class WireMock servers with shared helpers (see "Test helpers" under Technical knowledge). Two branches needed
+  changes: L11 had an import conflict in `KafkaRegistryUtilTest` (upstream's imports plus L11's three). L14's tests in
+  `DataPlaneFetcherImplTest` called `loadMockResponse` and `wireMockServer`, which no longer exist; git reported only
+  an import conflict there, the compiler the rest. They now call `ccloudResourceFixture` and `wireMock`, and L14's
+  fixture `schema-versions-by-id.json` moved to `fixtures/ccloud-resources/` (unchanged). The backup got the same
+  files as L11 and L14, the only branches that touch them.
 - 13 files that upstream changed since then are changed by our branches too: `CHANGELOG.md`,
   `KafkaBundle.properties`, `ccloud/fetcher/DataPlaneFetcher.kt`, `DataPlaneFetcherImpl.kt` (+ test),
   `client/KafkaClient.kt`, `consumer/client/CCloudConsumerClient.kt` (+ test), `data/CCloudClusterDataManager.kt`,
@@ -184,21 +195,26 @@ Cautions:
 
 ### Keeping up with upstream
 
-Upstream `main` moves often: two commits arrived within hours of the first rebase, three more on the next day. Each
-move took about an hour, most of it tests. The last one, onto `c69c01a0`, went exactly like this:
+Upstream `main` moves often: two commits arrived within hours of the first rebase, three more on the next day, four
+the day after. Each move took about an hour, most of it tests. The last one, onto `ca42fde6`, went like this:
 
 1. `git fetch upstream` and `git fetch origin`. Look at what upstream changed since the old base, and at the files it
    shares with the backup: `git diff --name-only <old base> upstream/main` against
-   `git diff --name-only <old base> backup/all-optimizations`. Check whether our code uses anything upstream changed.
+   `git diff --name-only <old base> backup/all-optimizations`. Check whether our code uses anything upstream changed:
+   collect the names that upstream's removed lines contain and its new files no longer do, and look for them in the
+   lines our commits add. That found the two deleted test helpers L14 used (see "Facts").
 2. Check that every local branch equals its `origin/` copy. Then the `origin/` refs keep the heads from before the
    rebase; the rebase commands, the checks and the lease use them, so no backup tags are needed.
 3. In a separate worktree, with `CHANGELOG.md merge=union` in `.git/info/attributes`: rebase O with
-   `git rebase --onto upstream/main origin/main oauth-4-schem-reg`, F1 the same way, every other branch with
-   `git rebase --onto <parent> origin/<parent> <branch>`, the stack with `--update-refs` up to S6, then the backup and
-   `handoff/pr-split`. Resolve code conflicts as in step 2 above. Delete the union line afterwards.
+   `git -c merge.directoryRenames=true rebase --onto upstream/main origin/main oauth-4-schem-reg`, F1 the same way,
+   every other branch with `git rebase --onto <parent> origin/<parent> <branch>`, the stack with `--update-refs` up to
+   S6, then the backup and `handoff/pr-split`. `merge.directoryRenames=true` moves a file that one of our commits adds
+   to a folder that upstream renamed along into the new folder, instead of stopping with a "file location" conflict.
+   Resolve code conflicts as in step 2 above, and compile a branch whose tests or code needed changes
+   (`./gradlew compileTestKotlin`) before resolving the backup the same way. Delete the union line afterwards.
 4. Check: the Unreleased section of every `CHANGELOG.md` has each `### …` header once and no line twice; every commit
-   adds and removes the same lines as its `origin/` copy; the merge of all branches equals the backup apart from the
-   intended differences (see Verification).
+   adds and removes the same lines as its `origin/` copy, apart from the adaptations made on purpose; the merge of all
+   branches equals the backup apart from the intended differences (see Verification).
 5. Run the full suite for upstream `main` and for every branch, one after the other, and `buildPlugin` for the backup.
    `buildPlugin` fails on purpose with "requires neither …" once upstream changes the charts dependency in
    `plugin.xml`: then check whether upstream supports 2026.3 itself and drop F1 (also from the backup), or adapt it.
@@ -216,7 +232,7 @@ branches again and never take a file from an older backup: it would drop the ups
 ### Order
 
 1. `oauth-4-schem-reg`. It must stay first and keep its commit "fix: build the Kafka client configs with the plugin
-   class loader" (`d80af1e9`): its Kafka 4.1.2 upgrade breaks Start Consuming and the consumer's Advanced Settings
+   class loader" (`c0de4f9a`): its Kafka 4.1.2 upgrade breaks Start Consuming and the consumer's Advanced Settings
    without that fix (see Technical knowledge).
 2. Branches without code conflicts: L1, L2, L9, L3, L5, L6, L12, L7, L8.
 3. The stack S0 → S1 → … → S6, then L10.
@@ -300,7 +316,10 @@ Two tests are always skipped: `ConnectionDataTest.connectionDataFields` and
 Run test suites one after the other, not two at the same time on one machine: two test classes from upstream then
 fail at random, because they rely on ports of the machine. `CCloudRestClientRetryTest` expects "connection refused"
 from a port that was free a moment before, and `ScaffoldHttpClientTest` calls its WireMock server through `localhost`.
-Upstream `main` `c69c01a0` alone has 1,983 tests.
+Even in a serial run, after upstream #668, `CCloudRestClientTransportTest > ParseErrors > fetch parse failure should
+propagate parser exception rather than status 0` failed once on L8, which does not touch that code, and passed in two
+reruns of the whole suite: rerun a branch before suspecting it when one of upstream's own WireMock tests fails.
+Upstream `main` `ca42fde6` alone has 2,028 tests.
 
 **How the split was proven.** All branches were merged one after the other into a throwaway branch, each conflict
 resolved with `git checkout backup/all-optimizations -- <file>`; the result differed from the backup only by the
@@ -314,7 +333,8 @@ merge of all branches equals the rebased backup apart from intended difference 1
 backup are those of upstream and of the branches, apart from intended difference 2. Every branch and the backup passed
 the full suite on its own; the backup also passed `buildPlugin`. After the later rebases, onto `756fb86c`, `ae3b47c0`
 and `c69c01a0`, every commit adds and removes exactly the same lines as before it, and the other checks gave the same
-results.
+results. After the rebase onto `ca42fde6` that holds for every commit apart from L14 (and the backup), whose two test
+lines and fixture path were adapted to upstream's test helpers; the moved fixture is byte for byte the same.
 
 **Intended differences from the backup.**
 
@@ -333,6 +353,7 @@ L more.
 |---------------------------------------------------------------------------------------------------------------------------------------------|-------|--------|------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Use the IDE trust store for Schema Registry TLS (corporate CAs)                                                                             | M–H   | M      | M    | Verdict was "do it if PKIX errors come back". It only helps the REST calls: the OAuth token endpoint goes through Kafka's own JWT retriever. Until then L12 explains the error and the manual says that a custom truststore replaces the default one. |
 | Plugin Verifier in CI (253 and latest; IU, WebStorm, PyCharm, GoLand, Rider)                                                                | M     | S–M    | L    | Its own pull request. The 253 release shipped a `NoClassDefFoundError`; MigLayout is scheduled for removal (IDEA-306719) and used in 12 files.                                                                                   |
+| Move our new tests to upstream's shared test helpers before their pull requests                                                             | M     | S      | L    | Since upstream #668 the tests use `wireMockExtension()` and `fixture(...)`. Eight of our test files still start their own `WireMockServer`: O (`ConfluentRegistryClientOAuthTest`), L11, L12, L13, L14, S1, S2, S5. Upstream's AI policy closes pull requests with new patterns without reason. |
 | De-duplicate the data-manager flows (`deleteSchema` is copy-pasted) and extract a testable schema catalog                                   | M     | L      | M–H  | Skipped so far. The data managers can not be built in tests, so the cache invalidation is only covered indirectly.                                                                                                                 |
 | Merge the Kafka and Confluent Cloud schema-detail controllers (about 230 of 405 lines shared) and move them from MigLayout to the UI DSL     | L–M   | L      | M    | Skipped so far.                                                                                                                                                                                                                    |
 | Run the registry check in parallel with `describeCluster`; the TCP probe runs twice                                                         | L     | S–M    | M    | Skipped: little is left to gain since L13. Upstream #651 changed the probe; check what is left after the rebase.                                                                                                                  |
@@ -396,7 +417,11 @@ Known limitations:
   the ID in reserved headers (`SchemaIdHeaders` in `registry/RecordSchema.kt`), which the record table and the header
   filter leave out. `data/RecordSchemaLookup.kt` asks the registry once per ID.
 - **Test helpers:** `util/RecordingLogger` (test sources) to assert log lines; a child-first class loader in the
-  `KafkaConfigDefs` tests.
+  `KafkaConfigDefs` tests. Since upstream #668: `testutil/WireMockTestSupport.kt` (`wireMockExtension()`, registered
+  with `@JvmField @RegisterExtension` in a companion object; `wireMock.baseUrl()`, `wireMock.stubFor(...)`),
+  `testutil/TestResources.kt` (`fixture(dir, name)` reads `test/resources/fixtures/<dir>/<name>`, `closedPort()`), and
+  for Confluent Cloud `ccloud/client/CCloudRestClientTestSupport.kt` (`ccloudFixture`, `ccloudResourceFixture`,
+  `testClient`, `signedInAuthService`). New tests should use them, and fixtures belong in `test/resources/fixtures/`.
 
 ## Continue on another machine
 
